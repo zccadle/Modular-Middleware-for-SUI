@@ -6,6 +6,7 @@ mod conditions;
 mod demo;
 mod metrics;
 mod examples;
+mod sui;
 
 use anyhow::{Result, anyhow};
 use ed25519_dalek::{Keypair, PublicKey};
@@ -23,6 +24,8 @@ use demo::weather::run_weather_based_transaction_demo;
 use examples::flight_delay::run_flight_delay_demo;
 use metrics::storage::MetricsStorage;
 use metrics::performance::PerformanceMetrics;
+use examples::flight_insurance::run_flight_insurance_demo;
+
 
 // For demo purposes, force gas payment validation to succeed.
 const _DEMO_MODE: bool = true;
@@ -278,6 +281,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         
         // Flight delay insurance demo
         run_flight_delay_demo(&transaction_handler, &execution_manager, Some(&metrics_storage)).await?;
+        run_flight_insurance_demo(&transaction_handler, &execution_manager, Some(&metrics_storage)).await?;
     }
     
     // Save performance metrics to file

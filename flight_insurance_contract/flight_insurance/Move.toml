@@ -1,0 +1,11 @@
+[package]
+name = "flight_insurance"
+version = "0.1.0"
+published-at = "0x0" # This will be filled in after publishing
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/testnet" }
+
+[addresses]
+flight_insurance = "0x0" # This will be your package address
+middleware_oracle = "0x0" # Replace with your oracle address
