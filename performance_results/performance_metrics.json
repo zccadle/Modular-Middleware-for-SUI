@@ -1,0 +1,162 @@
+[
+  {
+    "execution_time_ms": 20.4122,
+    "generation_time_ms": 154.94379999999998,
+    "sui_time_ms": 31.983900000000002,
+    "total_size_bytes": 2696,
+    "total_time_ms": 175.3886,
+    "transaction_type": "weather"
+  },
+  {
+    "execution_time_ms": 125.4777,
+    "generation_time_ms": 9.8286,
+    "sui_time_ms": 9.376199999999999,
+    "total_size_bytes": 977,
+    "total_time_ms": 135.30939999999998,
+    "transaction_type": "python"
+  },
+  {
+    "execution_time_ms": 12.6075,
+    "generation_time_ms": 8.5561,
+    "sui_time_ms": 8.4017,
+    "total_size_bytes": 851,
+    "total_time_ms": 21.1668,
+    "transaction_type": "javascript"
+  },
+  {
+    "execution_time_ms": 2.3319,
+    "generation_time_ms": 8.1169,
+    "sui_time_ms": 7.9253,
+    "total_size_bytes": 3101,
+    "total_time_ms": 10.4523,
+    "transaction_type": "flight_delay"
+  },
+  {
+    "execution_time_ms": 2.6226000000000003,
+    "generation_time_ms": 95.9756,
+    "sui_time_ms": 9.781099999999999,
+    "total_size_bytes": 2696,
+    "total_time_ms": 98.6062,
+    "transaction_type": "weather"
+  },
+  {
+    "execution_time_ms": 37.424899999999994,
+    "generation_time_ms": 8.304300000000001,
+    "sui_time_ms": 8.0547,
+    "total_size_bytes": 977,
+    "total_time_ms": 45.733200000000004,
+    "transaction_type": "python"
+  },
+  {
+    "execution_time_ms": 8.2119,
+    "generation_time_ms": 9.0267,
+    "sui_time_ms": 8.6334,
+    "total_size_bytes": 851,
+    "total_time_ms": 17.2428,
+    "transaction_type": "javascript"
+  },
+  {
+    "execution_time_ms": 2.5872,
+    "generation_time_ms": 8.8617,
+    "sui_time_ms": 8.6938,
+    "total_size_bytes": 3101,
+    "total_time_ms": 11.4522,
+    "transaction_type": "flight_delay"
+  },
+  {
+    "execution_time_ms": 3.0532,
+    "generation_time_ms": 94.18690000000001,
+    "sui_time_ms": 8.8852,
+    "total_size_bytes": 2696,
+    "total_time_ms": 97.2539,
+    "transaction_type": "weather"
+  },
+  {
+    "execution_time_ms": 32.9242,
+    "generation_time_ms": 8.392,
+    "sui_time_ms": 8.1044,
+    "total_size_bytes": 977,
+    "total_time_ms": 41.32,
+    "transaction_type": "python"
+  },
+  {
+    "execution_time_ms": 7.9476,
+    "generation_time_ms": 7.6562,
+    "sui_time_ms": 7.5331,
+    "total_size_bytes": 851,
+    "total_time_ms": 15.6072,
+    "transaction_type": "javascript"
+  },
+  {
+    "execution_time_ms": 2.3624,
+    "generation_time_ms": 9.7736,
+    "sui_time_ms": 9.4318,
+    "total_size_bytes": 3101,
+    "total_time_ms": 12.140099999999999,
+    "transaction_type": "flight_delay"
+  },
+  {
+    "execution_time_ms": 2.5113000000000003,
+    "generation_time_ms": 102.59490000000001,
+    "sui_time_ms": 7.5598,
+    "total_size_bytes": 2696,
+    "total_time_ms": 105.1156,
+    "transaction_type": "weather"
+  },
+  {
+    "execution_time_ms": 34.824099999999994,
+    "generation_time_ms": 7.4992,
+    "sui_time_ms": 7.3286999999999995,
+    "total_size_bytes": 977,
+    "total_time_ms": 42.327,
+    "transaction_type": "python"
+  },
+  {
+    "execution_time_ms": 8.5445,
+    "generation_time_ms": 10.7445,
+    "sui_time_ms": 10.623099999999999,
+    "total_size_bytes": 851,
+    "total_time_ms": 19.294700000000002,
+    "transaction_type": "javascript"
+  },
+  {
+    "execution_time_ms": 1.9584,
+    "generation_time_ms": 7.2091,
+    "sui_time_ms": 6.9729,
+    "total_size_bytes": 3101,
+    "total_time_ms": 9.1716,
+    "transaction_type": "flight_delay"
+  },
+  {
+    "execution_time_ms": 2.0912,
+    "generation_time_ms": 92.7128,
+    "sui_time_ms": 7.322699999999999,
+    "total_size_bytes": 2696,
+    "total_time_ms": 94.8128,
+    "transaction_type": "weather"
+  },
+  {
+    "execution_time_ms": 29.8613,
+    "generation_time_ms": 24.861,
+    "sui_time_ms": 24.678700000000003,
+    "total_size_bytes": 977,
+    "total_time_ms": 54.7319,
+    "transaction_type": "python"
+  },
+  {
+    "execution_time_ms": 8.198799999999999,
+    "generation_time_ms": 8.6976,
+    "sui_time_ms": 8.5798,
+    "total_size_bytes": 851,
+    "total_time_ms": 16.900499999999997,
+    "transaction_type": "javascript"
+  },
+  {
+    "execution_time_ms": 2.0827,
+    "generation_time_ms": 7.546200000000001,
+    "sui_time_ms": 7.3342,
+    "total_size_bytes": 3101,
+    "total_time_ms": 9.6329,
+    "transaction_type": "flight_delay"
+  }
+]
