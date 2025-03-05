@@ -1,0 +1,72 @@
+[
+  {
+    "chain_id": null,
+    "execution_time_ms": 10.2635,
+    "generation_time_ms": 55.1939,
+    "middleware_overhead_ms": 65.4574,
+    "middleware_overhead_percent": 119.61675797568098,
+    "sui_time_ms": 54.7226,
+    "total_size_bytes": 540,
+    "total_time_ms": 65.4623,
+    "transaction_type": "javascript",
+    "verification_attempts": null,
+    "verification_time_ms": null,
+    "verified": null
+  },
+  {
+    "chain_id": null,
+    "execution_time_ms": 7.459099999999999,
+    "generation_time_ms": 50.6783,
+    "middleware_overhead_ms": 58.1374,
+    "middleware_overhead_percent": 115.06705617835202,
+    "sui_time_ms": 50.5248,
+    "total_size_bytes": 540,
+    "total_time_ms": 58.1415,
+    "transaction_type": "javascript",
+    "verification_attempts": null,
+    "verification_time_ms": null,
+    "verified": null
+  },
+  {
+    "chain_id": null,
+    "execution_time_ms": 7.0441,
+    "generation_time_ms": 29.5313,
+    "middleware_overhead_ms": 36.5754,
+    "middleware_overhead_percent": 124.54337433089529,
+    "sui_time_ms": 29.3676,
+    "total_size_bytes": 540,
+    "total_time_ms": 36.5797,
+    "transaction_type": "javascript",
+    "verification_attempts": null,
+    "verification_time_ms": null,
+    "verified": null
+  },
+  {
+    "chain_id": null,
+    "execution_time_ms": 7.1065,
+    "generation_time_ms": 44.7108,
+    "middleware_overhead_ms": 51.817299999999996,
+    "middleware_overhead_percent": 116.3001517232711,
+    "sui_time_ms": 44.5548,
+    "total_size_bytes": 540,
+    "total_time_ms": 51.820699999999995,
+    "transaction_type": "javascript",
+    "verification_attempts": null,
+    "verification_time_ms": null,
+    "verified": null
+  },
+  {
+    "chain_id": null,
+    "execution_time_ms": 7.5407,
+    "generation_time_ms": 26.7411,
+    "middleware_overhead_ms": 34.2818,
+    "middleware_overhead_percent": 129.03709056964547,
+    "sui_time_ms": 26.567400000000003,
+    "total_size_bytes": 540,
+    "total_time_ms": 34.285999999999994,
+    "transaction_type": "javascript",
+    "verification_attempts": null,
+    "verification_time_ms": null,
+    "verified": null
+  }
+]

@@ -11,11 +11,17 @@ use crate::languages::javascript::JavaScriptExecutor;
 use crate::external::websocket::WebSocketClient;
 use crate::conditions::time::TimeBasedEvaluator;
 use crate::metrics::performance::PerformanceMetrics;
+use crate::sui::verification::VerificationManager;
+use crate::sui::network::NetworkManager;
+use crate::security::audit::{SecurityAuditLog, AuditSeverity};
 
 #[derive(Debug)]
 pub struct ExecutionManager {
     pub client: reqwest::Client,
     pub state: Arc<Mutex<HashMap<String, u64>>>,
+    verification_manager: Option<Arc<VerificationManager>>,
+    network_manager: Option<Arc<NetworkManager>>,
+    security_audit_log: Option<Arc<SecurityAuditLog>>,
 }
 
 impl ExecutionManager {
@@ -31,10 +37,17 @@ impl ExecutionManager {
         println!("Account balances have been reset for the next test iteration.");
     }
 
-    pub fn new() -> Self {
+    pub fn new(
+        verification_manager: Option<VerificationManager>,
+        network_manager: Option<NetworkManager>,
+        security_audit_log: Option<SecurityAuditLog>
+    ) -> Self {
         Self {
             client: reqwest::Client::new(),
             state: Arc::new(Mutex::new(HashMap::new())),
+            verification_manager: verification_manager.map(Arc::new),
+            network_manager: network_manager.map(Arc::new),
+            security_audit_log: security_audit_log.map(Arc::new),
         }
     }
 
@@ -56,6 +69,22 @@ impl ExecutionManager {
     }
 
     pub async fn execute_transaction(&self, tx: &mut Transaction, mut metrics: Option<&mut PerformanceMetrics>) -> Result<bool> {
+        // Log execution start
+        if let Some(audit_log) = &self.security_audit_log {
+            audit_log.log_execution(
+                "ExecutionManager",
+                &format!("Executing transaction from {} to {}", tx.sender, tx.receiver),
+                None,
+                AuditSeverity::Info
+            )?;
+        }
+        // Set chain ID in metrics if available
+        if let Some(m) = metrics.as_mut() {
+            if let Some(network_manager) = &self.network_manager {
+                let config = network_manager.get_active_config();
+                m.set_chain_id(&config.chain_id);
+            }
+        }
         // Start execution time tracking if metrics provided
         if let Some(m) = metrics.as_mut() {
             m.execution_start_time = Some(std::time::Instant::now());

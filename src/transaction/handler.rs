@@ -2,21 +2,32 @@ use anyhow::{Result, anyhow};
 use ed25519_dalek::{Keypair, Signature, Signer};
 use reqwest;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 use crate::transaction::types::Transaction;
 use crate::SUI_TESTNET_RPC;
 use crate::metrics::performance::PerformanceMetrics;
+use crate::sui::verification::{VerificationManager, VerificationStatus};
+use crate::security::audit::{SecurityAuditLog, AuditSeverity};
 
 #[derive(Debug)]
 pub struct TransactionHandler {
     pub client: reqwest::Client,
     pub keypair: Keypair,
+    verification_manager: Option<Arc<VerificationManager>>,
+    security_audit_log: Option<Arc<SecurityAuditLog>>,
 }
 
 impl TransactionHandler {
-    pub fn new(keypair: Keypair) -> Self {
+    pub fn new(
+        keypair: Keypair,
+        verification_manager: Option<VerificationManager>,
+        security_audit_log: Option<SecurityAuditLog>
+    ) -> Self {
         Self {
             client: reqwest::Client::new(),
             keypair,
+            verification_manager: verification_manager.map(Arc::new),
+            security_audit_log: security_audit_log.map(Arc::new),
         }
     }
 
@@ -107,5 +118,118 @@ impl TransactionHandler {
 
     pub fn sign_transaction(&self, tx_bytes: &[u8]) -> Result<Signature> {
         Ok(self.keypair.sign(tx_bytes))
+    }
+
+    // Register transaction for verification
+    pub fn register_for_verification(&self, tx: &Transaction, digest: &str) -> Result<()> {
+        if let Some(vm) = &self.verification_manager {
+            // Register transaction for verification
+            let register_result = vm.register_transaction(tx, digest);
+            
+            // Log registration
+            if let Some(audit_log) = &self.security_audit_log {
+                match &register_result {
+                    Ok(_) => {
+                        audit_log.log_validation(
+                            "TransactionHandler",
+                            "Transaction validation succeeded",
+                            None,
+                            AuditSeverity::Info
+                        )?;
+                    },
+                    Err(e) => {
+                        audit_log.log_verification(
+                            "TransactionHandler",
+                            &format!("Failed to register transaction for verification: {}", e),
+                            Some(digest),
+                            AuditSeverity::Error
+                        )?;
+                    }
+                }
+            }
+            
+            // Forward the result
+            register_result?;
+        }
+        
+        Ok(())
+    }
+
+    // Verify transaction
+    pub async fn verify_transaction(&self, digest: &str, mut metrics: Option<&mut PerformanceMetrics>) -> Result<VerificationStatus> {
+        if let Some(vm) = &self.verification_manager {
+            // Verify the transaction
+            let result = vm.verify_transaction(digest, metrics.as_deref_mut()).await;
+            
+            // Log verification result
+            if let Some(audit_log) = &self.security_audit_log {
+                match &result {
+                    Ok(status) => {
+                        match status {
+                            VerificationStatus::Verified => {
+                                audit_log.log_verification(
+                                    "TransactionHandler",
+                                    &format!("Transaction verified successfully: {}", digest),
+                                    Some(digest),
+                                    AuditSeverity::Info
+                                )?;
+                                
+                                // Update metrics if provided - using as_deref_mut pattern
+                                if let Some(m) = metrics.as_deref_mut() {
+                                    m.set_verification_result(true, 1);
+                                }
+                            },
+                            VerificationStatus::Failed(reason) => {
+                                audit_log.log_verification(
+                                    "TransactionHandler",
+                                    &format!("Transaction verification failed: {} - {}", digest, reason),
+                                    Some(digest),
+                                    AuditSeverity::Warning
+                                )?;
+                                
+                                // Update metrics if provided
+                                if let Some(m) = metrics.as_deref_mut() {
+                                    m.set_verification_result(false, 1);
+                                }
+                            },
+                            VerificationStatus::Pending => {
+                                audit_log.log_verification(
+                                    "TransactionHandler",
+                                    &format!("Transaction verification pending: {}", digest),
+                                    Some(digest),
+                                    AuditSeverity::Info
+                                )?;
+                            },
+                            VerificationStatus::Unverifiable(reason) => {
+                                audit_log.log_verification(
+                                    "TransactionHandler",
+                                    &format!("Transaction unverifiable: {} - {}", digest, reason),
+                                    Some(digest),
+                                    AuditSeverity::Error
+                                )?;
+                                
+                                // Update metrics if provided
+                                if let Some(m) = metrics.as_deref_mut() {
+                                    m.set_verification_result(false, 1);
+                                }
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        audit_log.log_verification(
+                            "TransactionHandler",
+                            &format!("Transaction verification error: {}", e),
+                            Some(digest),
+                            AuditSeverity::Error
+                        )?;
+                    }
+                }
+            }
+            
+            return result;
+        }
+        
+        // If verification manager is not available, return pending status
+        Ok(VerificationStatus::Pending)
     }
 }

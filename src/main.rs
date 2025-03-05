@@ -7,6 +7,10 @@ mod demo;
 mod metrics;
 mod examples;
 mod sui;
+mod security;
+
+#[cfg(test)]
+mod tests;
 
 use anyhow::{Result, anyhow};
 use ed25519_dalek::{Keypair, PublicKey};
@@ -14,6 +18,7 @@ use rand::rngs::OsRng;
 use std::error::Error;
 use std::path::Path;
 use std::fs;
+use std::env;
 
 use transaction::types::{Transaction, TransactionType, ExternalQuery, QueryCondition};
 use transaction::handler::TransactionHandler;
@@ -25,6 +30,9 @@ use examples::flight_delay::run_flight_delay_demo;
 use metrics::storage::MetricsStorage;
 use metrics::performance::PerformanceMetrics;
 use examples::flight_insurance::run_flight_insurance_demo;
+use crate::sui::verification::{VerificationManager, VerificationStatus};
+use crate::sui::network::{NetworkManager, NetworkType};
+use crate::security::audit::{SecurityAuditLog, AuditEvent, AuditEventType, AuditSeverity};
 
 
 // For demo purposes, force gas payment validation to succeed.
@@ -223,6 +231,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Load environment variables if present
     dotenv::dotenv().ok();
     
+    // Initialize security components
+    let network_type = match env::var("SUI_NETWORK_TYPE").unwrap_or_else(|_| "testnet".to_string()).as_str() {
+        "mainnet" => NetworkType::Mainnet,
+        "devnet" => NetworkType::Devnet,
+        "local" => NetworkType::Local,
+        _ => NetworkType::Testnet,
+    };
+
+    let network_manager = NetworkManager::new(network_type);
+    let rpc_url = network_manager.get_active_rpc_url()?;
+
+    let verification_manager = VerificationManager::new(&rpc_url);
+    let security_audit_log = SecurityAuditLog::new();
+
+    // Log startup security event
+    security_audit_log.log_network(
+        "main", 
+        &format!("Middleware started with network type: {}", network_type),
+        Some(&network_manager.get_active_config().chain_id),
+        AuditSeverity::Info
+    )?;
+
     // Initialize metrics storage
     let metrics_storage = MetricsStorage::new();
 
@@ -241,10 +271,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Initialize system components
-    let transaction_handler = TransactionHandler::new(keypair);
+    let transaction_handler = TransactionHandler::new(
+        keypair, 
+        Some(verification_manager.clone()), 
+        Some(security_audit_log.clone())
+    );
     let sequencing_layer = SequencingLayer::new();
-    let execution_manager = ExecutionManager::new();
-    let fallback_manager = FallbackManager::new();
+    let execution_manager = ExecutionManager::new(
+        Some(verification_manager.clone()), 
+        Some(network_manager.clone()), 
+        Some(security_audit_log.clone())
+    );    let fallback_manager = FallbackManager::new();
 
     println!("SUI Modular Middleware started with enhanced capabilities...");
     println!("- Multi-language Support (JavaScript, Python)");
