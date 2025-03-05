@@ -87,7 +87,8 @@ impl AviationStackApi {
 
     pub async fn get_flight_status(&self, flight_number: &str) -> Result<FlightStatus> {
         // In case the API key is not provided, fallback to simulation for testing
-        if self.api_key.is_empty() || self.api_key == "2fc75ebc3d098b7fa633950373d4d649" {
+        if self.api_key.is_empty() || self.api_key == "YOUR_API_KEY" {
+            println!("API key is invalid or empty: '{}', using simulation", self.api_key);
             return self.simulate_flight_status(flight_number).await;
         }
 
@@ -95,25 +96,33 @@ impl AviationStackApi {
             "http://api.aviationstack.com/v1/flights?access_key={}&flight_iata={}",
             self.api_key, flight_number
         );
+        println!("Making API request to Aviation Stack for flight {}", flight_number);
 
         match self.client.get(&url).send().await {
             Ok(response) => {
+                println!("API response status: {}", response.status());
                 if response.status().is_success() {
                     let data: Value = response.json().await?;
                     
                     // Check if we have any flight data
                     if let Some(flights) = data["data"].as_array() {
+                        println!("Found {} flights in API response", flights.len());
                         if let Some(flight) = flights.first() {
                             return self.parse_flight_data(flight, flight_number);
                         }
                     }
                     
+                    println!("No flight data found in API response");
                     Err(anyhow!("No flight data found for {}", flight_number))
                 } else {
+                    println!("API request failed: {}", response.status());
                     Err(anyhow!("API request failed with status: {}", response.status()))
                 }
             },
-            Err(e) => Err(anyhow!("API request error: {}", e)),
+            Err(e) => {
+                println!("API request error: {}", e);
+                Err(anyhow!("API request error: {}", e))
+            },
         }
     }
 
@@ -145,6 +154,9 @@ impl AviationStackApi {
                 std::cmp::max(departure_delay, arrival_delay)
             }
         };
+        
+        println!("Successfully parsed flight data: {} is {}, delay: {} minutes", 
+                 flight_number, status, delay_minutes);
         
         Ok(FlightStatus {
             flight_number: flight_number.to_string(),
@@ -271,6 +283,8 @@ impl AviationStackApi {
     result = true
 )]
 pub async fn get_cached_flight_status(api_key: &str, flight_number: &str) -> Result<FlightStatus> {
+    println!("Attempting to get flight status for {} with API key: {}", flight_number, 
+             if api_key.len() > 4 { &api_key[0..4] } else { api_key });
     let api = AviationStackApi::new(api_key.to_string());
     api.get_flight_status(flight_number).await
 }

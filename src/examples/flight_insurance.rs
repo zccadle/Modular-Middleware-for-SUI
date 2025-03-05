@@ -34,10 +34,29 @@ pub async fn run_flight_insurance_demo(
     };
     
     // Get AviationStack API key (if available)
-    let api_key = env::var("AVIATION_STACK_API_KEY").unwrap_or_else(|_| "YOUR_API_KEY".to_string());
+    // Check if .env file was loaded correctly
+    println!("Loading environment variables...");
+    for (key, value) in env::vars() {
+        if key.contains("API") || key.contains("KEY") {
+            println!("Found env var: {}={}", key, 
+                     if value.len() > 4 { format!("{}...", &value[0..4]) } else { value.clone() });
+        }
+    }
+
+    let api_key = env::var("AVIATION_STACK_API_KEY")
+        .map(|key| {
+            println!("Found API key in environment: {}", 
+                     if key.len() > 4 { format!("{}...", &key[0..4]) } else { key.clone() });
+            key
+        })
+        .unwrap_or_else(|e| {
+            println!("Error loading API key: {}", e);
+            println!("Using default API key");
+            "YOUR_API_KEY".to_string()
+        });
 
     // 1. Get flight status from real API
-    let flight_number = "BA1326"; // British Airways flight 1326 (for testing)
+    let flight_number = "SKW5690"; // SkyWest Flight 5690 (for testing)
     
     println!("Checking status for flight {}...", flight_number);
     
@@ -73,7 +92,7 @@ pub async fn run_flight_insurance_demo(
                 scheduled_arrival: Some(Utc::now() + chrono::Duration::hours(2)),
                 estimated_arrival: Some(Utc::now() + chrono::Duration::hours(2) + chrono::Duration::minutes(75)),
                 actual_arrival: None,
-                delay_minutes: 75,
+                delay_minutes: 70,
                 raw_data: json!({"simulated": true}),
             }
         }
