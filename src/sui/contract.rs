@@ -4,6 +4,44 @@ use serde_json::{json, Value};
 use std::env;
 use crate::SUI_TESTNET_RPC;
 use crate::external::flight_api::FlightStatus;
+use serde::{Serialize, Deserialize};
+
+/// Generic SUI contract type for interacting with on-chain contracts
+#[derive(Debug, Clone)]
+pub struct SuiContract {
+    /// Contract package ID
+    pub package_id: String,
+    /// Contract type
+    pub contract_type: SuiContractType,
+    /// Current contract state
+    pub state: SuiContractState,
+    /// Contract owner address
+    pub owner: Option<String>,
+}
+
+/// Types of SUI contracts supported by the middleware
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SuiContractType {
+    /// Flight insurance contract
+    FlightInsurance,
+    /// Generic payment contract
+    Payment,
+    /// Data oracle contract
+    Oracle,
+    /// Custom contract type
+    Custom(String),
+}
+
+/// Contract state representation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuiContractState {
+    /// Contract active status
+    pub active: bool,
+    /// Contract balance if applicable
+    pub balance: Option<u64>,
+    /// Contract metadata as JSON
+    pub metadata: Value,
+}
 
 // Flight insurance contract interaction
 pub struct FlightInsuranceContract {

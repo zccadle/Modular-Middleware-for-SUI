@@ -39,15 +39,15 @@ impl ExecutionManager {
 
     pub fn new(
         verification_manager: Option<VerificationManager>,
-        network_manager: Option<NetworkManager>,
-        security_audit_log: Option<SecurityAuditLog>
+        network_manager: Option<Arc<NetworkManager>>,
+        security_audit_log: Option<Arc<SecurityAuditLog>>
     ) -> Self {
         Self {
             client: reqwest::Client::new(),
             state: Arc::new(Mutex::new(HashMap::new())),
             verification_manager: verification_manager.map(Arc::new),
-            network_manager: network_manager.map(Arc::new),
-            security_audit_log: security_audit_log.map(Arc::new),
+            network_manager: network_manager,
+            security_audit_log: security_audit_log,
         }
     }
 
@@ -338,8 +338,11 @@ impl ExecutionManager {
             TransactionType::Transfer => {
                 let mut state = self.state.lock().expect("Failed to acquire lock");
                 {
-                    let sender_balance = state.entry(tx.sender.clone()).or_insert(1000);
-                    if *sender_balance < tx.amount {
+                    // Get sender's balance
+                    let sender_balance_option = state.get(&tx.sender).cloned();
+                    let sender_balance = sender_balance_option.unwrap_or(1000);
+                    
+                    if sender_balance < tx.amount {
                         println!("Insufficient balance for sender: {}", tx.sender);
                         
                         // End execution time tracking if metrics provided
@@ -349,31 +352,37 @@ impl ExecutionManager {
                         
                         return Err(anyhow!("Insufficient balance"));
                     }
-                    *sender_balance -= tx.amount;
+                    
+                    // Get receiver's balance
+                    let receiver_balance_option = state.get(&tx.receiver).cloned();
+                    let receiver_balance = receiver_balance_option.unwrap_or(0);
+                    
+                    // Update balances
+                    state.insert(tx.sender.clone(), sender_balance - tx.amount);
+                    state.insert(tx.receiver.clone(), receiver_balance + tx.amount);
+                    
+                    println!("Transferred {} from {} to {}", tx.amount, tx.sender, tx.receiver);
+                    println!("New balances: {} = {}, {} = {}", 
+                             tx.sender, sender_balance - tx.amount, 
+                             tx.receiver, receiver_balance + tx.amount);
                 }
-        
-                {
-                    let receiver_balance = state.entry(tx.receiver.clone()).or_insert(0);
-                    *receiver_balance += tx.amount;
-                }
-        
-                println!(
-                    "After execution: Sender {}: {}, Receiver {}: {}",
-                    tx.sender,
-                    state.get(&tx.sender).unwrap_or(&0),
-                    tx.receiver,
-                    state.get(&tx.receiver).unwrap_or(&0)
-                );
-        
-                println!("Executed transaction: {:?}", tx);
+            },
+            TransactionType::Invoke | TransactionType::Custom(_) => {
+                // For Invoke and Custom transaction types, we'll just log the execution
+                println!("Executing {} transaction with commands: {:?}", 
+                         format!("{:?}", tx.tx_type), tx.commands);
                 
-                // End execution time tracking if metrics provided
-                if let Some(m) = metrics.as_mut() {
-                    m.execution_end_time = Some(std::time::Instant::now());
-                }
-                
-                return Ok(true);
+                // In a real implementation, this would invoke a smart contract or custom logic
+                // For now, we'll just simulate success
+                println!("Transaction executed successfully");
             }
         }
+        
+        // End execution time tracking if metrics provided
+        if let Some(m) = metrics.as_mut() {
+            m.execution_end_time = Some(std::time::Instant::now());
+        }
+        
+        return Ok(true);
     }
 }

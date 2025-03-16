@@ -7,5 +7,5 @@ published-at = "0x0" # This will be filled in after publishing
 Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/testnet" }
 
 [addresses]
-flight_insurance = "0x0" # This will be your package address
-middleware_oracle = "0x0" # Replace with your oracle address
+flight_insurance = "0x0" # This will be filled automatically
+middleware_oracle = "0x4c45f32d0c5e9fd297e52d792c261a85f0582d0bfed0edd54e0cabe12cadd0f6" # Your active address

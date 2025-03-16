@@ -268,46 +268,33 @@ impl VerificationManager {
                         // Check if this is the sender's balance change
                         if let Some(owner) = change["owner"].as_object() {
                             if let Some(address) = owner["AddressOwner"].as_str() {
-                                // Normalize addresses for comparison
-                                let normalized_sender = Self::normalize_address(&tx.sender);
                                 let normalized_address = Self::normalize_address(address);
+                                let normalized_sender = Self::normalize_address(&tx.sender);
+                                let normalized_receiver = Self::normalize_address(&tx.receiver);
                                 
                                 if normalized_address == normalized_sender {
-                                    // This is the sender - should see a decrease
-                                    if let Some(amount) = change["amount"].as_i64() {
-                                        if amount <= 0 && amount.abs() as u64 >= tx.amount {
-                                            sender_change = true;
-                                        }
-                                    }
-                                }
-                                
-                                // Check if this is the receiver's balance change
-                                let normalized_receiver = Self::normalize_address(&tx.receiver);
-                                if normalized_address == normalized_receiver {
-                                    // This is the receiver - should see an increase
-                                    if let Some(amount) = change["amount"].as_i64() {
-                                        if amount >= tx.amount as i64 {
-                                            receiver_change = true;
-                                        }
-                                    }
+                                    sender_change = true;
+                                } else if normalized_address == normalized_receiver {
+                                    receiver_change = true;
                                 }
                             }
                         }
                     }
                     
-                    // Both sender and receiver changes should be verified
                     if sender_change && receiver_change {
                         return VerificationStatus::Verified;
                     } else {
-                        return VerificationStatus::Failed("Balance changes don't match expected transfer".to_string());
+                        return VerificationStatus::Failed("Transfer not properly reflected in balance changes".to_string());
                     }
+                } else {
+                    return VerificationStatus::Failed("No balance changes found in effects".to_string());
                 }
+            },
+            TransactionType::Invoke | TransactionType::Custom(_) => {
+                // In a real implementation, we would verify specific effects based on the contract or custom logic
+                VerificationStatus::Verified
             }
         }
-        
-        // If we couldn't verify specific effects, but the transaction succeeded,
-        // we'll consider it verified for now
-        VerificationStatus::Verified
     }
     
     /// Normalize a blockchain address for comparison

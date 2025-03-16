@@ -108,10 +108,20 @@ impl PerformanceMetrics {
         })
     }
     
+    pub fn end_operation(&mut self, operation_name: &str) {
+        // Mark the end of the operation
+        self.execution_end_time = Some(Instant::now());
+        
+        // Log the operation completion
+        println!("Operation '{}' for transaction type '{}' completed", 
+                 operation_name, self.transaction_type);
+    }
+    
     /// Set the verification result
     pub fn set_verification_result(&mut self, verified: bool, attempts: u8) {
         self.verified = Some(verified);
         self.verification_attempts = Some(attempts);
+        self.verification_end_time = Some(Instant::now());
     }
     
     /// Set the chain ID

@@ -120,6 +120,14 @@ impl TransactionHandler {
         Ok(self.keypair.sign(tx_bytes))
     }
 
+    // Sign a transaction directly
+    pub fn sign_transaction_object(&self, tx: &Transaction) -> Result<Signature> {
+        // First wrap the transaction
+        let tx_bytes = self.wrap_transaction(tx.clone(), None)?;
+        // Then sign it
+        self.sign_transaction(&tx_bytes)
+    }
+
     // Register transaction for verification
     pub fn register_for_verification(&self, tx: &Transaction, digest: &str) -> Result<()> {
         if let Some(vm) = &self.verification_manager {
