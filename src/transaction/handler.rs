@@ -4,10 +4,12 @@ use reqwest;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
 use crate::transaction::types::Transaction;
-use crate::SUI_TESTNET_RPC;
 use crate::metrics::performance::PerformanceMetrics;
 use crate::sui::verification::{VerificationManager, VerificationStatus};
 use crate::security::audit::{SecurityAuditLog, AuditSeverity};
+
+// Use the official SUI testnet endpoint
+const SUI_TESTNET_RPC: &str = "https://fullnode.testnet.sui.io:443";
 
 #[derive(Debug)]
 pub struct TransactionHandler {

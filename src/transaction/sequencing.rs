@@ -2,7 +2,10 @@ use anyhow::Result;
 use reqwest;
 use std::sync::{Arc, Mutex};
 use crate::transaction::types::{Transaction, TransactionType};
-use crate::SUI_TESTNET_RPC;
+use crate::metrics::performance::PerformanceMetrics;
+
+// Use the official SUI testnet endpoint
+const SUI_TESTNET_RPC: &str = "https://fullnode.testnet.sui.io:443";
 
 #[derive(Debug)]
 pub struct SequencingLayer {

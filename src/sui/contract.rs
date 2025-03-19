@@ -2,9 +2,12 @@ use anyhow::{Result, anyhow};
 use reqwest;
 use serde_json::{json, Value};
 use std::env;
-use crate::SUI_TESTNET_RPC;
+use crate::transaction::types::Transaction;
 use crate::external::flight_api::FlightStatus;
 use serde::{Serialize, Deserialize};
+
+// Use the official SUI testnet endpoint
+const SUI_TESTNET_RPC: &str = "https://fullnode.testnet.sui.io:443";
 
 /// Generic SUI contract type for interacting with on-chain contracts
 #[derive(Debug, Clone)]

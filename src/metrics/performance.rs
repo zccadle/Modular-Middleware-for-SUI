@@ -1,5 +1,6 @@
 use serde::{Serialize, Deserialize};
 use std::time::Instant;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct PerformanceMetrics {
@@ -173,4 +174,186 @@ impl PerformanceMetrics {
             println!("  Chain ID: {}", chain_id);
         }
     }
+}
+
+/// Component-level benchmark for measuring performance of specific system components
+#[derive(Debug, Clone)]
+pub struct ComponentBenchmark {
+    pub component_name: String,
+    pub start_time: Instant,
+    pub end_time: Option<Instant>,
+    pub iterations: u32,
+    pub security_level: String, // "none", "basic", "enhanced", "maximum"
+    pub configuration: HashMap<String, String>, // Store test parameters
+    pub operation_timings: HashMap<String, Vec<u64>>, // Operation-level timing data
+    pub operation_counts: HashMap<String, u32>, // Count of operations performed
+}
+
+impl ComponentBenchmark {
+    /// Create a new component benchmark
+    pub fn new(component_name: &str, security_level: &str, iterations: u32) -> Self {
+        Self {
+            component_name: component_name.to_string(),
+            start_time: Instant::now(),
+            end_time: None,
+            iterations,
+            security_level: security_level.to_string(),
+            configuration: HashMap::new(),
+            operation_timings: HashMap::new(),
+            operation_counts: HashMap::new(),
+        }
+    }
+    
+    /// Add a configuration parameter
+    pub fn add_config(&mut self, key: &str, value: &str) -> &mut Self {
+        self.configuration.insert(key.to_string(), value.to_string());
+        self
+    }
+    
+    /// Record timing for a specific operation
+    pub fn record_operation(&mut self, operation: &str, duration_ms: u64) -> &mut Self {
+        self.operation_timings.entry(operation.to_string())
+            .or_insert_with(Vec::new)
+            .push(duration_ms);
+        
+        let count = self.operation_counts.entry(operation.to_string())
+            .or_insert(0);
+        *count += 1;
+        
+        self
+    }
+    
+    /// End the benchmark and calculate elapsed time
+    pub fn end(&mut self) -> &mut Self {
+        self.end_time = Some(Instant::now());
+        self
+    }
+    
+    /// Calculate the total duration in milliseconds
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.end_time.map(|end| 
+            end.duration_since(self.start_time).as_millis() as u64
+        )
+    }
+    
+    /// Calculate average duration per iteration in milliseconds
+    pub fn avg_duration_per_iteration_ms(&self) -> Option<f64> {
+        self.duration_ms().map(|duration| 
+            duration as f64 / self.iterations as f64
+        )
+    }
+    
+    /// Get average timing for a specific operation
+    pub fn avg_operation_time(&self, operation: &str) -> Option<f64> {
+        self.operation_timings.get(operation).map(|times| {
+            if times.is_empty() {
+                0.0
+            } else {
+                times.iter().sum::<u64>() as f64 / times.len() as f64
+            }
+        })
+    }
+    
+    /// Get median timing for a specific operation
+    pub fn median_operation_time(&self, operation: &str) -> Option<f64> {
+        self.operation_timings.get(operation).map(|times| {
+            if times.is_empty() {
+                0.0
+            } else {
+                let mut sorted = times.clone();
+                sorted.sort();
+                let mid = sorted.len() / 2;
+                if sorted.len() % 2 == 0 {
+                    (sorted[mid-1] + sorted[mid]) as f64 / 2.0
+                } else {
+                    sorted[mid] as f64
+                }
+            }
+        })
+    }
+    
+    /// Convert benchmark to JSON representation
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut operation_avg = HashMap::new();
+        let mut operation_median = HashMap::new();
+        
+        for op in self.operation_timings.keys() {
+            if let Some(avg) = self.avg_operation_time(op) {
+                operation_avg.insert(op, avg);
+            }
+            if let Some(median) = self.median_operation_time(op) {
+                operation_median.insert(op, median);
+            }
+        }
+        
+        serde_json::json!({
+            "component_name": self.component_name,
+            "security_level": self.security_level,
+            "iterations": self.iterations,
+            "duration_ms": self.duration_ms(),
+            "avg_duration_per_iteration_ms": self.avg_duration_per_iteration_ms(),
+            "configuration": self.configuration,
+            "operation_counts": self.operation_counts,
+            "operation_avg_times": operation_avg,
+            "operation_median_times": operation_median
+        })
+    }
+    
+    /// Print a summary of the benchmark results
+    pub fn print_summary(&self) {
+        println!("\n=== COMPONENT BENCHMARK SUMMARY ===");
+        println!("Component: {}", self.component_name);
+        println!("Security Level: {}", self.security_level);
+        println!("Iterations: {}", self.iterations);
+        
+        if let Some(duration) = self.duration_ms() {
+            println!("Total Duration: {} ms", duration);
+        }
+        
+        if let Some(avg) = self.avg_duration_per_iteration_ms() {
+            println!("Avg Duration Per Iteration: {:.2} ms", avg);
+        }
+        
+        if !self.operation_timings.is_empty() {
+            println!("\nOperation Timings:");
+            for (op, _) in &self.operation_timings {
+                if let Some(avg) = self.avg_operation_time(op) {
+                    println!("  {} - Avg: {:.2} ms, Count: {}", 
+                             op, avg, self.operation_counts.get(op).unwrap_or(&0));
+                }
+            }
+        }
+        
+        if !self.configuration.is_empty() {
+            println!("\nConfiguration:");
+            for (key, value) in &self.configuration {
+                println!("  {}: {}", key, value);
+            }
+        }
+        
+        println!("==============================\n");
+    }
+}
+
+// Wrapper functions for benchmarking specific components
+pub fn benchmark_transaction_verification(security_level: &str, iterations: u32) -> ComponentBenchmark {
+    ComponentBenchmark::new("transaction_verification", security_level, iterations)
+}
+
+pub fn benchmark_byzantine_detection(nodes: u32, security_level: &str, iterations: u32) -> ComponentBenchmark {
+    let mut benchmark = ComponentBenchmark::new("byzantine_detection", security_level, iterations);
+    benchmark.add_config("nodes", &nodes.to_string());
+    benchmark
+}
+
+pub fn benchmark_external_data_verification(sources: u32, security_level: &str, iterations: u32) -> ComponentBenchmark {
+    let mut benchmark = ComponentBenchmark::new("external_data_verification", security_level, iterations);
+    benchmark.add_config("sources", &sources.to_string());
+    benchmark
+}
+
+pub fn benchmark_cross_chain_support(chains: &[&str], security_level: &str, iterations: u32) -> ComponentBenchmark {
+    let mut benchmark = ComponentBenchmark::new("cross_chain_support", security_level, iterations);
+    benchmark.add_config("chains", &chains.join(","));
+    benchmark
 }

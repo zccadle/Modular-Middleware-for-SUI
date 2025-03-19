@@ -2,17 +2,19 @@ use std::sync::{Arc, Mutex};
 use std::fs::File;
 use std::io::Write;
 use anyhow::Result;
-use super::performance::PerformanceMetrics;
+use super::performance::{PerformanceMetrics, ComponentBenchmark};
 use std::collections::HashMap;
 
 pub struct MetricsStorage {
     metrics: Arc<Mutex<Vec<PerformanceMetrics>>>,
+    benchmarks: Arc<Mutex<Vec<ComponentBenchmark>>>,
 }
 
 impl MetricsStorage {
     pub fn new() -> Self {
         Self {
             metrics: Arc::new(Mutex::new(Vec::new())),
+            benchmarks: Arc::new(Mutex::new(Vec::new())),
         }
     }
     
@@ -130,5 +132,76 @@ impl MetricsStorage {
             println!("Middleware Overhead: {:.2}%", stats["middleware_overhead_percent"]);
         }
         println!("\n=================================");
+    }
+    
+    /// Add component benchmark to storage
+    pub fn add_benchmark(&self, benchmark: ComponentBenchmark) {
+        let mut benchmarks_guard = self.benchmarks.lock().unwrap();
+        benchmarks_guard.push(benchmark);
+    }
+    
+    /// Get all stored benchmarks
+    pub fn get_all_benchmarks(&self) -> Vec<ComponentBenchmark> {
+        let benchmarks_guard = self.benchmarks.lock().unwrap();
+        benchmarks_guard.clone()
+    }
+    
+    /// Save benchmarks to a JSON file
+    pub fn save_benchmarks_to_json_file(&self, filename: &str) -> Result<()> {
+        let benchmarks = self.get_all_benchmarks();
+        
+        // Convert benchmarks to JSON-friendly format
+        let json_benchmarks: Vec<serde_json::Value> = benchmarks.iter()
+            .map(|b| b.to_json())
+            .collect();
+        
+        let json = serde_json::to_string_pretty(&json_benchmarks)?;
+        
+        let mut file = File::create(filename)?;
+        file.write_all(json.as_bytes())?;
+        Ok(())
+    }
+    
+    /// Get benchmarks grouped by component and security level
+    pub fn get_benchmarks_by_component_and_level(&self) -> HashMap<String, HashMap<String, Vec<ComponentBenchmark>>> {
+        let benchmarks = self.get_all_benchmarks();
+        let mut result: HashMap<String, HashMap<String, Vec<ComponentBenchmark>>> = HashMap::new();
+        
+        for benchmark in benchmarks {
+            result.entry(benchmark.component_name.clone())
+                .or_insert_with(HashMap::new)
+                .entry(benchmark.security_level.clone())
+                .or_insert_with(Vec::new)
+                .push(benchmark);
+        }
+        
+        result
+    }
+    
+    /// Print benchmark summary
+    pub fn print_benchmark_summary(&self) {
+        let grouped = self.get_benchmarks_by_component_and_level();
+        
+        println!("\n=== BENCHMARK SUMMARY ===");
+        for (component, levels) in grouped {
+            println!("\nComponent: {}", component);
+            for (level, benchmarks) in levels {
+                if benchmarks.is_empty() { continue; }
+                
+                // Calculate average duration per iteration across all benchmarks for this component+level
+                let total_iterations: u32 = benchmarks.iter().map(|b| b.iterations).sum();
+                let total_duration: f64 = benchmarks.iter()
+                    .filter_map(|b| b.duration_ms())
+                    .map(|d| d as f64)
+                    .sum();
+                
+                println!("  Security Level: {}", level);
+                println!("  Benchmarks: {}", benchmarks.len());
+                println!("  Total Iterations: {}", total_iterations);
+                println!("  Avg Duration per Iteration: {:.2} ms", 
+                         if total_iterations > 0 { total_duration / total_iterations as f64 } else { 0.0 });
+            }
+        }
+        println!("\n===========================");
     }
 }

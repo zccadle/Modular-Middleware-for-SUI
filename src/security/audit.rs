@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 /// Security audit event types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -406,5 +407,26 @@ impl SecurityAuditLog {
         }
         
         self.log_event(event)
+    }
+    
+    /// Add an audit event with source, type, severity, and message
+    pub fn add_event(&self, source: &str, event_type: AuditEventType, severity: AuditSeverity, message: &str) {
+        let event = AuditEvent::new(event_type, severity, source, message);
+        let _ = self.log_event(event);
+    }
+    
+    /// Add an audit event with additional data
+    pub fn add_event_with_data(&self, source: &str, event_type: AuditEventType, severity: AuditSeverity, 
+                               message: &str, data: HashMap<String, String>) {
+        let mut event = AuditEvent::new(event_type, severity, source, message);
+        
+        // Add all data as context
+        let mut json_data = serde_json::Map::new();
+        for (key, value) in data {
+            json_data.insert(key, serde_json::Value::String(value));
+        }
+        
+        event.context = serde_json::Value::Object(json_data);
+        let _ = self.log_event(event);
     }
 }

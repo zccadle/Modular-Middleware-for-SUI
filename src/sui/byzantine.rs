@@ -239,124 +239,92 @@ impl ByzantineDetector {
     
     /// Check for consensus among node responses
     fn check_consensus(&self, responses: &[NodeResponse], digest: &str) -> Result<(bool, NodeResponse)> {
+        let start_time = Instant::now();
+        
         // Filter valid responses
         let valid_responses: Vec<&NodeResponse> = responses.iter()
             .filter(|r| r.status == NodeResponseStatus::Valid)
             .collect();
+        let filter_time = start_time.elapsed();
+        
+        // Record timing information for metrics
+        let mut metrics_data = HashMap::new();
+        metrics_data.insert("filter_time_ms".to_string(), filter_time.as_millis().to_string());
         
         // If we don't have enough valid responses for quorum
         if valid_responses.len() < MIN_QUORUM_SIZE {
-            // If we have at least one valid response
-            if let Some(response) = valid_responses.first() {
-                // Log the limited consensus
-                if let Some(log) = &self.audit_log {
-                    let _ = log.log_validation(
-                        "ByzantineDetector",
-                        &format!("Limited consensus for {}: only {} valid responses out of {} nodes",
-                            digest, valid_responses.len(), responses.len()),
-                        Some(digest),
-                        AuditSeverity::Warning
-                    );
-                }
-                
-                // Return the single valid response
-                return Ok((false, (*response).clone()));
+            if let Some(audit_log) = &self.audit_log {
+                audit_log.add_event(
+                    "ByzantineDetector",
+                    AuditEventType::TransactionVerification,
+                    AuditSeverity::Warning,
+                    &format!("Insufficient valid nodes for consensus ({}/{})", 
+                             valid_responses.len(), responses.len())
+                );
             }
-            
-            // If we have no valid responses, return the first one with an error
-            if let Some(response) = responses.first() {
-                return Ok((false, response.clone()));
-            }
-            
-            // If we have no responses at all
-            return Err(anyhow!("No responses available for consensus check"));
+            return Err(anyhow!("Insufficient valid responses for consensus ({})", valid_responses.len()));
         }
         
-        // Group responses by their data hash
-        let mut response_groups: HashMap<String, Vec<&NodeResponse>> = HashMap::new();
+        // Start consensus calculation
+        let consensus_start = Instant::now();
         
-        for response in &valid_responses {
-            if let Some(data) = &response.data {
-                // Normalize the data for comparison (remove volatile fields)
-                let normalized_data = Self::normalize_data_for_comparison(data);
+        // Find the most common response data
+        let mut data_frequency: HashMap<String, (usize, &NodeResponse)> = HashMap::new();
+        
+        for resp in &valid_responses {
+            if let Some(data) = &resp.data {
+                // Normalize data for comparison to handle irrelevant differences
+                let normalized = Self::normalize_data_for_comparison(data);
+                let data_str = normalized.to_string();
                 
-                // Create a hash of the normalized data for grouping
-                let hash = format!("{:x}", md5::compute(serde_json::to_string(&normalized_data).unwrap_or_default()));
-                
-                response_groups.entry(hash)
-                    .or_insert_with(Vec::new)
-                    .push(response);
+                let entry = data_frequency.entry(data_str).or_insert((0, *resp));
+                entry.0 += 1;
             }
         }
         
-        // Find the largest group
-        let mut largest_group = None;
-        let mut largest_size = 0;
+        let data_comparison_time = consensus_start.elapsed();
+        metrics_data.insert("data_comparison_time_ms".to_string(), data_comparison_time.as_millis().to_string());
         
-        for (hash, group) in &response_groups {
-            if group.len() > largest_size {
-                largest_size = group.len();
-                largest_group = Some((hash.clone(), group));
+        // Find the most frequent response
+        let consensus_calculation_start = Instant::now();
+        let mut max_frequency = 0;
+        let mut consensus_response = None;
+        
+        for (_, (frequency, resp)) in data_frequency {
+            if frequency > max_frequency {
+                max_frequency = frequency;
+                consensus_response = Some(resp);
             }
         }
         
-        // Check if we have a consensus group
-        if let Some((hash, group)) = largest_group {
-            // If all valid responses agree
-            if group.len() == valid_responses.len() {
-                // Full consensus achieved
-                if let Some(log) = &self.audit_log {
-                    let _ = log.log_validation(
-                        "ByzantineDetector",
-                        &format!("Full consensus achieved for {}: all {} nodes agree",
-                            digest, group.len()),
-                        Some(digest),
-                        AuditSeverity::Info
-                    );
-                }
-                
-                return Ok((true, (*group[0]).clone()));
-            }
-            
-            // Partial consensus achieved
-            if group.len() >= MIN_QUORUM_SIZE {
-                // Log divergent node responses
-                if let Some(log) = &self.audit_log {
-                    // Calculate which nodes diverged
-                    let divergent_nodes: Vec<String> = valid_responses.iter()
-                        .filter(|r| !group.contains(r))
-                        .map(|r| r.node_url.clone())
-                        .collect();
-                    
-                    let _ = log.log_validation(
-                        "ByzantineDetector",
-                        &format!("Partial consensus for {}: {} out of {} nodes agree, divergent nodes: {}",
-                            digest, group.len(), valid_responses.len(), divergent_nodes.join(", ")),
-                        Some(digest),
-                        AuditSeverity::Warning
-                    );
-                }
-                
-                return Ok((true, (*group[0]).clone()));
-            }
-        }
+        let consensus_calculation_time = consensus_calculation_start.elapsed();
+        metrics_data.insert("consensus_calculation_time_ms".to_string(), 
+                            consensus_calculation_time.as_millis().to_string());
         
-        // No consensus group with minimum size
-        if let Some(log) = &self.audit_log {
-            let _ = log.log_validation(
+        // Check if we have a majority consensus
+        let quorum_size = (valid_responses.len() / 2) + 1;
+        let has_consensus = max_frequency >= quorum_size;
+        
+        let total_time = start_time.elapsed();
+        metrics_data.insert("total_consensus_check_time_ms".to_string(), 
+                           total_time.as_millis().to_string());
+        
+        // Record operation in security audit log
+        if let Some(audit_log) = &self.audit_log {
+            audit_log.add_event_with_data(
                 "ByzantineDetector",
-                &format!("No consensus achieved for {}: responses too divergent",
-                    digest),
-                Some(digest),
-                AuditSeverity::Error
+                AuditEventType::TransactionVerification,
+                if has_consensus { AuditSeverity::Info } else { AuditSeverity::Warning },
+                &format!("Byzantine consensus check: {} (consensus: {}/{})", 
+                        if has_consensus { "success" } else { "failed" },
+                        max_frequency, valid_responses.len()),
+                metrics_data
             );
         }
         
-        // Return the first valid response with a warning
-        if let Some(response) = valid_responses.first() {
-            Ok((false, (*response).clone()))
-        } else {
-            Err(anyhow!("No valid responses available for consensus check"))
+        match consensus_response {
+            Some(resp) => Ok((has_consensus, resp.clone())),
+            None => Err(anyhow!("Failed to establish consensus for transaction {}", digest))
         }
     }
     

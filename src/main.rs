@@ -41,6 +41,8 @@ use crate::sui::byzantine::ByzantineDetector;
 use crate::sui::cross_chain::{create_chain_mapper, demonstrate_cross_chain_mapping};
 use crate::external::oracle::{create_weather_oracle, OracleManager};
 
+// Add our library crate import to access the tools module
+use suimodular::tools;
 
 // For demo purposes, force gas payment validation to succeed.
 const _DEMO_MODE: bool = true;
@@ -475,6 +477,27 @@ else:
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Add benchmark command-line option
+    let matches = clap::App::new("SUI Modular Middleware")
+        .version("1.0.0")
+        .author("Security Research Team")
+        .about("Middleware for SUI blockchain with comprehensive security features")
+        .arg(clap::Arg::with_name("benchmark")
+            .long("benchmark")
+            .help("Run comprehensive benchmarks"))
+        .arg(clap::Arg::with_name("output-dir")
+            .long("output-dir")
+            .takes_value(true)
+            .default_value("benchmark_results")
+            .help("Directory for benchmark results"))
+        .get_matches();
+    
+    if matches.is_present("benchmark") {
+        let output_dir = matches.value_of("output-dir").unwrap();
+        println!("Running comprehensive benchmarks...");
+        return tools::benchmark_suite::run_comprehensive_benchmarks(output_dir).await;
+    }
+    
     // Load environment variables if present
     dotenv::dotenv().ok();
     
