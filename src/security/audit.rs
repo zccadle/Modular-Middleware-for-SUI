@@ -1,77 +1,62 @@
-use serde::{Serialize, Deserialize};
-use std::sync::{Arc, Mutex};
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
-use anyhow::{Result, anyhow};
+//! Security Audit Logging Module
+//!
+//! Provides capabilities for logging security-relevant events.
+//! Supports configurable destinations (console, file) and severity levels.
+
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
-/// Security audit event types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Types of events recorded by the audit log.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AuditEventType {
-    /// Transaction validation
     TransactionValidation,
-    /// Transaction execution
     TransactionExecution,
-    /// Transaction verification
     TransactionVerification,
-    /// Network operation
     NetworkOperation,
-    /// External API call
     ExternalAPI,
-    /// Authentication event
     Authentication,
-    /// Authorization event
     Authorization,
-    /// Configuration change
     ConfigChange,
-    /// Security error
     SecurityError,
+    // Add more specific types if needed
 }
 
-/// Security audit event severity
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Severity levels for audit events.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AuditSeverity {
-    /// Informational event
-    Info,
-    /// Warning event
-    Warning,
-    /// Error event
-    Error,
-    /// Critical security event
-    Critical,
+    Info,    // Informational messages
+    Warning, // Potential issues
+    Error,   // Recoverable errors or significant issues
+    Critical, // Critical security events, potential system compromise
 }
 
-/// Security audit event
+/// Represents a single security audit event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
-    /// Event timestamp
+    #[serde(with = "chrono::serde::ts_milliseconds")]
     pub timestamp: DateTime<Utc>,
-    /// Event type
     pub event_type: AuditEventType,
-    /// Event severity
     pub severity: AuditSeverity,
-    /// User or component that initiated the event
-    pub source: String,
-    /// Transaction ID if applicable
+    pub source: String, // Component or module originating the event
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_id: Option<String>,
-    /// Chain ID if applicable
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chain_id: Option<String>,
-    /// Detailed event message
-    pub message: String,
-    /// Additional context data
-    pub context: serde_json::Value,
+    pub message: String, // Detailed description of the event
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub context: Value, // Additional structured data (JSON)
 }
 
 impl AuditEvent {
-    /// Create a new audit event
-    pub fn new(
-        event_type: AuditEventType,
-        severity: AuditSeverity,
-        source: &str,
-        message: &str,
-    ) -> Self {
+    /// Creates a new audit event.
+    pub fn new(event_type: AuditEventType, severity: AuditSeverity, source: &str, message: &str) -> Self {
         Self {
             timestamp: Utc::now(),
             event_type,
@@ -80,71 +65,79 @@ impl AuditEvent {
             transaction_id: None,
             chain_id: None,
             message: message.to_string(),
-            context: serde_json::json!({}),
+            context: Value::Null,
         }
     }
-    
-    /// Set the transaction ID
+
+    /// Associates a transaction ID with the event.
     pub fn with_transaction_id(mut self, tx_id: &str) -> Self {
         self.transaction_id = Some(tx_id.to_string());
         self
     }
-    
-    /// Set the chain ID
+
+    /// Associates a chain ID with the event.
     pub fn with_chain_id(mut self, chain_id: &str) -> Self {
         self.chain_id = Some(chain_id.to_string());
         self
     }
-    
-    /// Add context data
+
+    /// Adds structured context data (key-value) to the event.
     pub fn with_context(mut self, key: &str, value: impl Serialize) -> Self {
-        if let Ok(value_json) = serde_json::to_value(value) {
-            if let Some(obj) = self.context.as_object_mut() {
+        if self.context.is_null() {
+            self.context = serde_json::json!({});
+        }
+        if let Some(obj) = self.context.as_object_mut() {
+            if let Ok(value_json) = serde_json::to_value(value) {
                 obj.insert(key.to_string(), value_json);
             }
         }
         self
     }
-    
-    /// Convert to JSON
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "timestamp": self.timestamp.to_rfc3339(),
-            "event_type": format!("{:?}", self.event_type),
-            "severity": format!("{:?}", self.severity),
-            "source": self.source,
-            "transaction_id": self.transaction_id,
-            "chain_id": self.chain_id,
-            "message": self.message,
-            "context": self.context,
-        })
+
+    /// Converts the event to a structured JSON value.
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({ "error": "Failed to serialize AuditEvent" }))
     }
-    
-    /// Convert to a formatted log string
+
+    /// Formats the event into a single log string.
     pub fn to_log_string(&self) -> String {
         format!(
-            "[{}] [{}] [{}] {}: {} (tx_id: {:?}, chain: {:?})",
+            "[{}] [{:<8}] [{:<25}] {}: {} {}",
             self.timestamp.to_rfc3339(),
-            format!("{:?}", self.severity),
+            format!("{:?}", self.severity).to_uppercase(),
             format!("{:?}", self.event_type),
             self.source,
             self.message,
-            self.transaction_id,
-            self.chain_id
+            self.format_context()
         )
+    }
+
+    /// Helper to format context for the log string.
+    fn format_context(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(tx_id) = &self.transaction_id {
+            parts.push(format!("tx_id={}", tx_id));
+        }
+        if let Some(chain_id) = &self.chain_id {
+            parts.push(format!("chain={}", chain_id));
+        }
+        if !self.context.is_null() {
+            parts.push(format!("ctx={}", serde_json::to_string(&self.context).unwrap_or_default()));
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("({})", parts.join(", "))
+        }
     }
 }
 
-/// Security audit log configuration
+/// Configuration for the `SecurityAuditLog`.
 #[derive(Debug, Clone)]
 pub struct AuditLogConfig {
-    /// Whether to enable console logging
     pub console_enabled: bool,
-    /// Whether to enable file logging
     pub file_enabled: bool,
-    /// Path to the log file
     pub log_file_path: Option<PathBuf>,
-    /// Minimum severity level to log
     pub min_severity: AuditSeverity,
 }
 
@@ -153,34 +146,27 @@ impl Default for AuditLogConfig {
         Self {
             console_enabled: true,
             file_enabled: true,
-            log_file_path: Some(PathBuf::from("security_audit.log")),
+            log_file_path: Some("security_audit.log".into()),
             min_severity: AuditSeverity::Info,
         }
     }
 }
 
-/// Security audit logger
+/// Thread-safe system for recording security audit events.
 #[derive(Debug, Clone)]
 pub struct SecurityAuditLog {
-    /// Configuration for the audit log
     config: Arc<Mutex<AuditLogConfig>>,
-    /// In-memory record of recent audit events
     events: Arc<Mutex<Vec<AuditEvent>>>,
-    /// Maximum number of events to keep in memory
     max_events: usize,
 }
 
 impl SecurityAuditLog {
-    /// Create a new security audit logger with default configuration
+    /// Creates a new `SecurityAuditLog` with default configuration.
     pub fn new() -> Self {
-        Self {
-            config: Arc::new(Mutex::new(AuditLogConfig::default())),
-            events: Arc::new(Mutex::new(Vec::new())),
-            max_events: 1000, // Keep the last 1000 events in memory
-        }
+        Self::with_config(AuditLogConfig::default())
     }
-    
-    /// Create a new security audit logger with custom configuration
+
+    /// Creates a new `SecurityAuditLog` with the specified configuration.
     pub fn with_config(config: AuditLogConfig) -> Self {
         Self {
             config: Arc::new(Mutex::new(config)),
@@ -188,180 +174,144 @@ impl SecurityAuditLog {
             max_events: 1000,
         }
     }
-    
-    /// Update the configuration
-    pub fn update_config(&self, config: AuditLogConfig) {
-        let mut current_config = self.config.lock().unwrap();
-        *current_config = config;
+
+    /// Updates the logger configuration dynamically.
+    pub fn update_config(&self, new_config: AuditLogConfig) -> Result<(), String> {
+        self.config.lock().map(|mut guard| *guard = new_config)
+             .map_err(|e| format!("Failed to acquire lock for config update: {}", e))
     }
-    
-    /// Log a security audit event
+
+    /// Logs an `AuditEvent` if its severity meets the configured minimum.
     pub fn log_event(&self, event: AuditEvent) -> Result<()> {
-        // Check severity threshold
-        let config = self.config.lock().unwrap();
-        let should_log = match (&config.min_severity, &event.severity) {
-            (AuditSeverity::Info, _) => true,
-            (AuditSeverity::Warning, AuditSeverity::Warning | AuditSeverity::Error | AuditSeverity::Critical) => true,
-            (AuditSeverity::Error, AuditSeverity::Error | AuditSeverity::Critical) => true,
-            (AuditSeverity::Critical, AuditSeverity::Critical) => true,
-            _ => false,
-        };
-        
-        if !should_log {
+        let config = self.config.lock().map_err(|e| anyhow!("Config lock poisoned: {}", e))?;
+
+        if event.severity < config.min_severity {
             return Ok(());
         }
-        
-        // Add to in-memory events
-        {
-            let mut events = self.events.lock().unwrap();
-            events.push(event.clone());
-            
-            // Trim if over max size
-            if events.len() > self.max_events {
-                events.remove(0);
-            }
-        }
-        
-        // Log to console if enabled
+
         if config.console_enabled {
             println!("{}", event.to_log_string());
         }
-        
-        // Log to file if enabled
+
         if config.file_enabled {
             if let Some(path) = &config.log_file_path {
-                let file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)?;
-                
-                let mut file = std::io::BufWriter::new(file);
-                writeln!(file, "{}", event.to_log_string())?;
+                match OpenOptions::new().create(true).append(true).open(path) {
+                    Ok(file) => {
+                        let mut writer = BufWriter::new(file);
+                        if let Err(e) = writeln!(writer, "{}", event.to_log_string()) {
+                            eprintln!("ERROR: Failed to write audit event to file {:?}: {}", path, e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("ERROR: Failed to open audit log file {:?}: {}", path, e);
+                    }
+                }
             }
         }
-        
+
+        if let Ok(mut events_guard) = self.events.lock() {
+            events_guard.push(event);
+            if events_guard.len() > self.max_events {
+                events_guard.remove(0);
+            }
+        } else {
+            eprintln!("ERROR: Events mutex poisoned. Event not added to in-memory buffer.");
+        }
+
         Ok(())
     }
-    
-    /// Get all audit events in memory
+
+    /// Retrieves a clone of all audit events currently held in the in-memory buffer.
     pub fn get_events(&self) -> Vec<AuditEvent> {
-        let events = self.events.lock().unwrap();
-        events.clone()
+        self.events.lock().map_or_else(
+            |poisoned| {
+                eprintln!("ERROR: Events mutex poisoned while getting events: {}", poisoned);
+                Vec::new()
+            },
+            |guard| guard.clone(),
+        )
     }
-    
-    /// Get events filtered by severity
+
+    /// Filters in-memory events by severity.
     pub fn get_events_by_severity(&self, severity: AuditSeverity) -> Vec<AuditEvent> {
-        let events = self.events.lock().unwrap();
-        events.iter()
-            .filter(|e| match (&e.severity, &severity) {
-                (AuditSeverity::Info, AuditSeverity::Info) => true,
-                (AuditSeverity::Warning, AuditSeverity::Warning) => true,
-                (AuditSeverity::Error, AuditSeverity::Error) => true,
-                (AuditSeverity::Critical, AuditSeverity::Critical) => true,
-                _ => false,
-            })
-            .cloned()
-            .collect()
+        self.get_events().into_iter().filter(|e| e.severity == severity).collect()
     }
-    
-    /// Get events filtered by event type
+
+    /// Filters in-memory events by type.
     pub fn get_events_by_type(&self, event_type: AuditEventType) -> Vec<AuditEvent> {
-        let events = self.events.lock().unwrap();
-        events.iter()
-            .filter(|e| std::mem::discriminant(&e.event_type) == std::mem::discriminant(&event_type))
-            .cloned()
-            .collect()
+        self.get_events().into_iter().filter(|e| e.event_type == event_type).collect()
     }
-    
-    /// Get events related to a specific transaction
+
+    /// Filters in-memory events by transaction ID.
     pub fn get_events_by_transaction(&self, transaction_id: &str) -> Vec<AuditEvent> {
-        let events = self.events.lock().unwrap();
-        events.iter()
+        self.get_events().into_iter()
             .filter(|e| e.transaction_id.as_deref() == Some(transaction_id))
-            .cloned()
             .collect()
     }
-    
-    /// Export events to a JSON file
+
+    /// Exports all events from the in-memory buffer to a JSON file.
     pub fn export_events_to_json(&self, path: &str) -> Result<()> {
-        let events = self.events.lock().unwrap();
-        let json = serde_json::to_string_pretty(&*events)?;
-        
+        let events = self.get_events();
+        let json_value = serde_json::to_value(&events)?;
+        let json_string = serde_json::to_string_pretty(&json_value)?;
+
         let mut file = File::create(path)?;
-        file.write_all(json.as_bytes())?;
-        
+        file.write_all(json_string.as_bytes())?;
         Ok(())
     }
-    
-    /// Clear all events from memory
+
+    /// Clears all events from the in-memory buffer.
     pub fn clear_events(&self) {
-        let mut events = self.events.lock().unwrap();
-        events.clear();
+        if let Ok(mut events_guard) = self.events.lock() {
+            events_guard.clear();
+        } else {
+            eprintln!("ERROR: Events mutex poisoned while clearing events.");
+        }
     }
-    
-    /// Create convenience logging methods for different event types
+
+    /// Convenience logging methods for different event types
     
     /// Log a transaction validation event
     pub fn log_validation(&self, source: &str, message: &str, tx_id: Option<&str>, severity: AuditSeverity) -> Result<()> {
-        let mut event = AuditEvent::new(
+        let event = AuditEvent::new(
             AuditEventType::TransactionValidation,
             severity,
             source,
             message,
-        );
-        
-        if let Some(tx_id) = tx_id {
-            event = event.with_transaction_id(tx_id);
-        }
-        
+        ).with_transaction_id(tx_id.unwrap_or(""));
         self.log_event(event)
     }
     
     /// Log a transaction execution event
     pub fn log_execution(&self, source: &str, message: &str, tx_id: Option<&str>, severity: AuditSeverity) -> Result<()> {
-        let mut event = AuditEvent::new(
+        let event = AuditEvent::new(
             AuditEventType::TransactionExecution,
             severity,
             source,
             message,
-        );
-        
-        if let Some(tx_id) = tx_id {
-            event = event.with_transaction_id(tx_id);
-        }
-        
+        ).with_transaction_id(tx_id.unwrap_or(""));
         self.log_event(event)
     }
     
     /// Log a transaction verification event
     pub fn log_verification(&self, source: &str, message: &str, tx_id: Option<&str>, severity: AuditSeverity) -> Result<()> {
-        let mut event = AuditEvent::new(
+        let event = AuditEvent::new(
             AuditEventType::TransactionVerification,
             severity,
             source,
             message,
-        );
-        
-        if let Some(tx_id) = tx_id {
-            event = event.with_transaction_id(tx_id);
-        }
-        
+        ).with_transaction_id(tx_id.unwrap_or(""));
         self.log_event(event)
     }
     
     /// Log a network operation event
     pub fn log_network(&self, source: &str, message: &str, chain_id: Option<&str>, severity: AuditSeverity) -> Result<()> {
-        let mut event = AuditEvent::new(
+        let event = AuditEvent::new(
             AuditEventType::NetworkOperation,
             severity,
             source,
             message,
-        );
-        
-        if let Some(chain_id) = chain_id {
-            event = event.with_chain_id(chain_id);
-        }
-        
+        ).with_chain_id(chain_id.unwrap_or(""));
         self.log_event(event)
     }
     
@@ -373,49 +323,44 @@ impl SecurityAuditLog {
             source,
             message,
         );
-        
         self.log_event(event)
     }
     
-    /// Log a security error
-    pub fn log_security_error(&self, source: &str, message: &str, context: Option<serde_json::Value>) -> Result<()> {
+    /// Log a security error (Error severity)
+    pub fn log_security_error(&self, source: &str, message: &str, context: Option<Value>) -> Result<()> {
         let mut event = AuditEvent::new(
             AuditEventType::SecurityError,
             AuditSeverity::Error,
             source,
             message,
         );
-        
-        if let Some(context) = context {
-            event = event.with_context("error_details", context);
+        if let Some(ctx) = context {
+            event.context = ctx;
         }
-        
         self.log_event(event)
     }
     
-    /// Log a critical security error
-    pub fn log_critical_security_error(&self, source: &str, message: &str, context: Option<serde_json::Value>) -> Result<()> {
+    /// Log a critical security error (Critical severity)
+    pub fn log_critical_security_error(&self, source: &str, message: &str, context: Option<Value>) -> Result<()> {
         let mut event = AuditEvent::new(
             AuditEventType::SecurityError,
             AuditSeverity::Critical,
             source,
             message,
         );
-        
-        if let Some(context) = context {
-            event = event.with_context("error_details", context);
+        if let Some(ctx) = context {
+            event.context = ctx;
         }
-        
         self.log_event(event)
     }
     
-    /// Add an audit event with source, type, severity, and message
+    /// Add a simple audit event with source, type, severity, and message
     pub fn add_event(&self, source: &str, event_type: AuditEventType, severity: AuditSeverity, message: &str) {
         let event = AuditEvent::new(event_type, severity, source, message);
         let _ = self.log_event(event);
     }
     
-    /// Add an audit event with additional data
+    /// Add an audit event with additional structured data
     pub fn add_event_with_data(&self, source: &str, event_type: AuditEventType, severity: AuditSeverity, 
                                message: &str, data: HashMap<String, String>) {
         let mut event = AuditEvent::new(event_type, severity, source, message);
@@ -428,5 +373,11 @@ impl SecurityAuditLog {
         
         event.context = serde_json::Value::Object(json_data);
         let _ = self.log_event(event);
+    }
+}
+
+impl Default for SecurityAuditLog {
+    fn default() -> Self {
+        Self::new()
     }
 }

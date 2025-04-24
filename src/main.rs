@@ -1,781 +1,441 @@
-mod transaction;
-mod execution;
-mod languages;
-mod external;
+//! Main entry point for the SUI Modular Middleware.
+//!
+//! Handles command-line arguments for running benchmarks, setup tasks, or demos.
+
+// Declare modules first
 mod conditions;
+mod config;
 mod demo;
-mod metrics;
 mod examples;
-mod sui;
+mod execution;
+mod external;
+mod languages;
+mod metrics;
+mod quorum;
 mod security;
-
-#[cfg(test)]
+mod sui;
 mod tests;
+mod tools;
+mod transaction;
 
-use anyhow::{Result, anyhow};
-use ed25519_dalek::{Keypair, PublicKey};
-use rand::rngs::OsRng; 
-use std::error::Error;
-use std::path::Path;
-use std::fs;
-use std::env;
-use std::sync::Arc;
-
-use transaction::types::{Transaction, TransactionType, ExternalQuery, QueryCondition};
-use transaction::handler::TransactionHandler;
-use transaction::sequencing::SequencingLayer;
-use execution::manager::ExecutionManager;
-use execution::fallback::FallbackManager;
-use demo::weather::run_weather_based_transaction_demo;
-use examples::flight_delay::run_flight_delay_demo;
-use metrics::storage::MetricsStorage;
-use metrics::performance::PerformanceMetrics;
-use examples::flight_insurance::run_flight_insurance_demo;
-use examples::enhanced_flight_insurance::run_enhanced_flight_insurance_demo;
-use crate::sui::verification::{VerificationManager, VerificationStatus};
-use crate::sui::network::{NetworkManager, NetworkType};
-use crate::security::audit::{SecurityAuditLog, AuditEvent, AuditEventType, AuditSeverity};
-use crate::security::model::{SecurityModel, generate_security_documentation};
-use crate::security::verification::{create_verification_framework, demonstrate_security_verification};
-use crate::sui::byzantine::ByzantineDetector;
-use crate::sui::cross_chain::{create_chain_mapper, demonstrate_cross_chain_mapping};
-use crate::external::oracle::{create_weather_oracle, OracleManager};
-
-// Add our library crate import to access the tools module
-use suimodular::tools;
-
-// For demo purposes, force gas payment validation to succeed.
-const _DEMO_MODE: bool = true;
-// Use the official SUI testnet endpoint.
-const SUI_TESTNET_RPC: &str = "https://fullnode.testnet.sui.io:443";
-// Provided public key; if only public key is available, a new keypair is generated.
-const PUBLIC_KEY: &str = "AExF8y0MXp/Sl+UteSwmGoXwWC0L/tDt1U4Mq+EsrdD2";
-
-async fn run_js_transaction_demo(
-    transaction_handler: &TransactionHandler,
-    execution_manager: &ExecutionManager,
-    metrics_storage: Option<&MetricsStorage>,
-    security_audit_log: &SecurityAuditLog,
-) -> Result<()> {
-    println!("\n--- RUNNING JAVASCRIPT TRANSACTION DEMO WITH SECURITY VALIDATION ---\n");
-    
-    // Create metrics if storage is provided
-    let mut metrics = if metrics_storage.is_some() {
-        Some(PerformanceMetrics::new("javascript"))
-    } else {
-        None
-    };
-    
-    // Log the operation
-    security_audit_log.log_validation(
-        "JavaScriptDemo",
-        "Starting JavaScript transaction demo with security validation",
-        None,
-        AuditSeverity::Info
-    )?;
-    
-    // Create a simple JavaScript transaction
-    let js_script = r#"
-// Simple JavaScript transaction logic with security validation
-const currentHour = new Date().getHours();
-const currentDay = new Date().getDay(); // 0 = Sunday, 6 = Saturday
-
-// Security: Input validation
-if (typeof currentHour !== 'number' || currentHour < 0 || currentHour > 23) {
-    console.error("Security validation failed: Invalid hour");
-    return {
-        shouldExecute: false,
-        securityValidated: false,
-        error: "Invalid hour detected"
-    };
-}
-
-// Calculate gas based on time of day with bounds checking
-let optimalGas = 50;
-if (currentHour < 12) {
-    optimalGas = 75; // Morning
-} else if (currentHour < 18) {
-    optimalGas = 90; // Afternoon
-} else {
-    optimalGas = 60; // Evening
-}
-
-// Security: Ensure gas is within acceptable limits
-const minGas = 50;
-const maxGas = 200;
-const gasFactor = 1.2;
-const finalGas = Math.min(maxGas, Math.max(minGas, Math.round(optimalGas * gasFactor)));
-
-// Security: Include validation in response
-({
-    shouldExecute: true,
-    gasAdjustment: gasFactor,
-    gasBudget: finalGas,
-    analysis: `JavaScript transaction processed at ${new Date().toTimeString()}`,
-    securityValidated: true,
-    securityContext: {
-        inputValidated: true,
-        gasBoundsChecked: true,
-        timestamp: Date.now()
-    }
-})
-"#;
-
-    let mut js_txn = Transaction {
-        tx_type: TransactionType::Transfer,
-        sender: "0x4c45f32d0c5e9fd297e52d792c261a85f0582d0bfed0edd54e0cabe12cadd0f6".to_string(),
-        receiver: "0x02a212de6a9dfa3a69e22387acfbafbb1a9e591bd9d636e7895dcfc8de05f331".to_string(),
-        amount: 50,
-        gas_payment: "0xb9fd6cfa2637273ca33dd3aef2f0b0296755889a0ef7f77c9cc95953a96a6302".to_string(),
-        gas_budget: 50,
-        commands: vec!["TransferObjects".to_string()],
-        signatures: None,
-        timestamp: 0,
-        script: Some(js_script.to_string()),
-        external_query: None,
-        python_code: None,
-        python_params: None,
-        websocket_endpoint: None,
-        websocket_message: None,
-        time_condition: None,
-        language: Some("javascript".to_string()),
-    };
-    
-    // Create a mock transaction digest for verification
-    let mock_digest = format!("js_tx_{}", rand::random::<u64>());
-    
-    match transaction_handler.validate_transaction(&js_txn, metrics.as_mut()).await {
-        Ok(true) => {
-            println!("JavaScript transaction validated successfully with security checks.");
-            
-            // Register for verification
-            transaction_handler.register_for_verification(&js_txn, &mock_digest)?;
-            
-            let wrapped_txn = transaction_handler.wrap_transaction(js_txn.clone(), metrics.as_mut())?;
-            
-            match execution_manager.execute_transaction(&mut js_txn, metrics.as_mut()).await {
-                Ok(true) => {
-                    println!("✅ JavaScript transaction executed successfully with gas budget: {}", js_txn.gas_budget);
-                    
-                    // Verify transaction
-                    match transaction_handler.verify_transaction(&mock_digest, metrics.as_mut()).await {
-                        Ok(VerificationStatus::Verified) => {
-                            println!("✅ Transaction verified successfully!");
-                            
-                            // Log successful verification
-                            security_audit_log.log_verification(
-                                "JavaScriptDemo",
-                                "Transaction verified successfully",
-                                Some(&mock_digest),
-                                AuditSeverity::Info
-                            )?;
-                        },
-                        Ok(status) => {
-                            println!("⚠️ Transaction verification status: {:?}", status);
-                            
-                            // Log verification status
-                            security_audit_log.log_verification(
-                                "JavaScriptDemo",
-                                &format!("Transaction verification status: {:?}", status),
-                                Some(&mock_digest),
-                                AuditSeverity::Warning
-                            )?;
-                        },
-                        Err(e) => {
-                            println!("❌ Error verifying transaction: {}", e);
-                            
-                            // Log verification error
-                            security_audit_log.log_verification(
-                                "JavaScriptDemo",
-                                &format!("Error verifying transaction: {}", e),
-                                Some(&mock_digest),
-                                AuditSeverity::Error
-                            )?;
-                        }
-                    }
-                },
-                Ok(false) => {
-                    println!("❌ JavaScript transaction condition failed - this should not happen in demo mode.");
-                    
-                    // Log execution failure
-                    security_audit_log.log_execution(
-                        "JavaScriptDemo",
-                        "JavaScript transaction condition failed",
-                        Some(&mock_digest),
-                        AuditSeverity::Warning
-                    )?;
-                },
-                Err(e) => {
-                    println!("❌ JavaScript execution error: {}", e);
-                    
-                    // Log execution error
-                    security_audit_log.log_execution(
-                        "JavaScriptDemo",
-                        &format!("JavaScript execution error: {}", e),
-                        Some(&mock_digest),
-                        AuditSeverity::Error
-                    )?;
-                }
-            }
-        },
-        Ok(false) => {
-            println!("❌ Validation Error: JavaScript transaction did not pass validation.");
-            
-            // Log validation failure
-            security_audit_log.log_validation(
-                "JavaScriptDemo",
-                "JavaScript transaction did not pass validation",
-                None,
-                AuditSeverity::Warning
-            )?;
-        },
-        Err(e) => {
-            println!("❌ Validation Error: {}", e);
-            
-            // Log validation error
-            security_audit_log.log_validation(
-                "JavaScriptDemo",
-                &format!("Validation error: {}", e),
-                None,
-                AuditSeverity::Error
-            )?;
-        }
-    }
-    
-    // Store metrics if provided
-    if let (Some(m), Some(storage)) = (metrics, metrics_storage) {
-        storage.add_metrics(m);
-    }
-    
-    println!("\n--- JAVASCRIPT TRANSACTION DEMO COMPLETE ---\n");
-    
-    Ok(())
-}
-
-async fn run_python_transaction_demo(
-    transaction_handler: &TransactionHandler,
-    execution_manager: &ExecutionManager,
-    metrics_storage: Option<&MetricsStorage>,
-    security_audit_log: &SecurityAuditLog,
-) -> Result<()> {
-    println!("\n--- RUNNING PYTHON TRANSACTION DEMO WITH SECURITY VALIDATION ---\n");
-    
-    // Create metrics if storage is provided
-    let mut metrics = if metrics_storage.is_some() {
-        Some(PerformanceMetrics::new("python"))
-    } else {
-        None
-    };
-    
-    // Log the operation
-    security_audit_log.log_validation(
-        "PythonDemo",
-        "Starting Python transaction demo with security validation",
-        None,
-        AuditSeverity::Info
-    )?;
-    
-    // Python script that adjusts gas fees based on time of day with security validation
-    let python_script = r#"
-# Demo Python transaction logic with security validation
-import datetime
-import json
-
-# Security: Input validation function
-def validate_input():
-    current_hour = datetime.datetime.now().hour
-    current_day = datetime.datetime.now().weekday()  # 0 = Monday, 6 = Sunday
-    
-    if not isinstance(current_hour, int) or current_hour < 0 or current_hour > 23:
-        print("Security validation failed: Invalid hour")
-        return False, current_hour, current_day
-        
-    if not isinstance(current_day, int) or current_day < 0 or current_day > 6:
-        print("Security validation failed: Invalid day")
-        return False, current_hour, current_day
-    
-    return True, current_hour, current_day
-
-# Perform input validation
-is_valid, current_hour, current_day = validate_input()
-
-if not is_valid:
-    result = {
-        "should_execute": False,
-        "security_validated": False,
-        "error": "Input validation failed"
-    }
-else:
-    # Calculate optimal gas based on time of day
-    if current_hour < 9:  # Early morning
-        optimal_gas = 60
-    elif current_hour < 17:  # Business hours
-        optimal_gas = 85
-    else:  # Evening
-        optimal_gas = 70
-
-    # Security: Gas price bounds checking
-    min_gas = 50
-    max_gas = 150
-    gas_budget = max(min_gas, min(max_gas, optimal_gas))
-
-    # Security: Record validation in result
-    result = {
-        "should_execute": True,  # Always true for the demo
-        "gas_budget": gas_budget,
-        "analysis": f"Transaction analyzed at {datetime.datetime.now().strftime('%H:%M:%S')} on day {current_day}",
-        "security_validated": True,
-        "security_context": {
-            "input_validated": True,
-            "gas_bounds_checked": True,
-            "timestamp": datetime.datetime.now().timestamp()
-        }
-    }
-"#;
-
-    // Create the Python transaction
-    let mut txn = Transaction {
-        tx_type: TransactionType::Transfer,
-        sender: "0x4c45f32d0c5e9fd297e52d792c261a85f0582d0bfed0edd54e0cabe12cadd0f6".to_string(),
-        receiver: "0x02a212de6a9dfa3a69e22387acfbafbb1a9e591bd9d636e7895dcfc8de05f331".to_string(),
-        amount: 100,
-        gas_payment: "0xb9fd6cfa2637273ca33dd3aef2f0b0296755889a0ef7f77c9cc95953a96a6302".to_string(),
-        gas_budget: 50,
-        commands: vec!["TransferObjects".to_string()],
-        signatures: None,
-        timestamp: 0,
-        script: None,
-        // External query that will adjust gas based on ETH price
-        external_query: Some(ExternalQuery {
-            url: "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd".to_string(),
-            path: vec!["ethereum".to_string(), "usd".to_string()],
-            // Set a condition that will always be true (any ETH price will be > 0)
-            condition: Some(QueryCondition {
-                threshold: 1000,
-                operator: "gt".to_string(),
-            }),
-        }),
-        python_code: Some(python_script.to_string()),
-        python_params: None,
-        websocket_endpoint: None,
-        websocket_message: None,
-        time_condition: None,
-        language: Some("python".to_string()),
-    };
-
-    // Create a mock transaction digest for verification
-    let mock_digest = format!("python_tx_{}", rand::random::<u64>());
-
-    println!("Processing Python-based transaction with security validation...");
-    match transaction_handler.validate_transaction(&txn, metrics.as_mut()).await {
-        Ok(true) => {
-            println!("Python transaction validated successfully with security checks.");
-            
-            // Register for verification
-            transaction_handler.register_for_verification(&txn, &mock_digest)?;
-            
-            let wrapped_txn = transaction_handler.wrap_transaction(txn.clone(), metrics.as_mut())?;
-            
-            match execution_manager.execute_transaction(&mut txn, metrics.as_mut()).await {
-                Ok(true) => {
-                    println!("✅ Python transaction executed successfully with gas budget: {}", txn.gas_budget);
-                    
-                    // Verify transaction
-                    match transaction_handler.verify_transaction(&mock_digest, metrics.as_mut()).await {
-                        Ok(VerificationStatus::Verified) => {
-                            println!("✅ Transaction verified successfully!");
-                            
-                            // Log successful verification
-                            security_audit_log.log_verification(
-                                "PythonDemo",
-                                "Transaction verified successfully",
-                                Some(&mock_digest),
-                                AuditSeverity::Info
-                            )?;
-                        },
-                        Ok(status) => {
-                            println!("⚠️ Transaction verification status: {:?}", status);
-                            
-                            // Log verification status
-                            security_audit_log.log_verification(
-                                "PythonDemo",
-                                &format!("Transaction verification status: {:?}", status),
-                                Some(&mock_digest),
-                                AuditSeverity::Warning
-                            )?;
-                        },
-                        Err(e) => {
-                            println!("❌ Error verifying transaction: {}", e);
-                            
-                            // Log verification error
-                            security_audit_log.log_verification(
-                                "PythonDemo",
-                                &format!("Error verifying transaction: {}", e),
-                                Some(&mock_digest),
-                                AuditSeverity::Error
-                            )?;
-                        }
-                    }
-                },
-                Ok(false) => {
-                    println!("❌ Python transaction condition failed - this should not happen in demo mode.");
-                    
-                    // Log execution failure
-                    security_audit_log.log_execution(
-                        "PythonDemo",
-                        "Python transaction condition failed",
-                        Some(&mock_digest),
-                        AuditSeverity::Warning
-                    )?;
-                },
-                Err(e) => {
-                    println!("❌ Execution error: {}", e);
-                    
-                    // Log execution error
-                    security_audit_log.log_execution(
-                        "PythonDemo",
-                        &format!("Python execution error: {}", e),
-                        Some(&mock_digest),
-                        AuditSeverity::Error
-                    )?;
-                }
-            }
-        },
-        Ok(false) => {
-            println!("❌ Validation Error: Python transaction did not pass validation.");
-            
-            // Log validation failure
-            security_audit_log.log_validation(
-                "PythonDemo",
-                "Python transaction did not pass validation",
-                None,
-                AuditSeverity::Warning
-            )?;
-        },
-        Err(e) => {
-            println!("❌ Validation Error: {}", e);
-            
-            // Log validation error
-            security_audit_log.log_validation(
-                "PythonDemo",
-                &format!("Validation error: {}", e),
-                None,
-                AuditSeverity::Error
-            )?;
-        }
-    }
-    
-    // Store metrics if provided
-    if let (Some(m), Some(storage)) = (metrics, metrics_storage) {
-        storage.add_metrics(m);
-    }
-    
-    println!("\n--- PYTHON TRANSACTION DEMO COMPLETE ---\n");
-    
-    Ok(())
-}
+// Use statements
+use crate::{ // Use crate:: prefix for local modules
+    config::{load_submitter_keypair}, // Removed self import
+    demo::weather::run_weather_based_transaction_demo,
+    examples::{enhanced_flight_insurance::run_enhanced_flight_insurance_demo, flight_delay::run_flight_delay_demo},
+    execution::manager::ExecutionManager,
+    external::oracle::create_weather_oracle,
+    metrics::storage::MetricsStorage,
+    quorum::simulation::QuorumSimulation,
+    security::{audit::{AuditSeverity, SecurityAuditLog, AuditEventType}, model::generate_security_documentation, verification::create_verification_framework}, // Added AuditEventType
+    sui::{byzantine::ByzantineDetector, cross_chain::create_chain_mapper, network::{NetworkManager, NetworkType}, verification::VerificationManager},
+    tools::benchmark_suite,
+    transaction::{handler::TransactionHandler, types::{Transaction, TransactionType}, utils::process_and_submit_verification},
+};
+use anyhow::{anyhow, Context, Result};
+use clap::{App, Arg};
+use std::{
+    collections::HashMap, // Added HashMap import
+    env,
+    error::Error,
+    fs,
+    path::Path,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
+use sui_sdk::{
+    rpc_types::SuiObjectDataOptions, // Added import
+    types::{
+        base_types::{ObjectID, SuiAddress},
+        // crypto::SuiKeyPair, // Removed unused import
+    },
+    SuiClient,
+    SuiClientBuilder,
+};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    // Add benchmark command-line option
-    let matches = clap::App::new("SUI Modular Middleware")
-        .version("1.0.0")
-        .author("Security Research Team")
-        .about("Middleware for SUI blockchain with comprehensive security features")
-        .arg(clap::Arg::with_name("benchmark")
-            .long("benchmark")
-            .help("Run comprehensive benchmarks"))
-        .arg(clap::Arg::with_name("output-dir")
-            .long("output-dir")
-            .takes_value(true)
-            .default_value("benchmark_results")
-            .help("Directory for benchmark results"))
+pub async fn main() -> Result<(), Box<dyn Error>> {
+    // Parse command-line arguments using Clap
+    let matches = App::new("SUI Modular Middleware")
+        .version(env!("CARGO_PKG_VERSION")) // Use version from Cargo.toml
+        .author("D. Lee <dongguk.lee@kcl.ac.uk>") // Replace with actual author info
+        .about("A modular middleware framework for secure off-chain computation with Sui verification.")
+        .arg(
+            Arg::with_name("benchmark")
+                .long("benchmark")
+                .help("Run the comprehensive benchmark suite (End-to-End and Byzantine Resilience)."),
+        )
+        // Removed --security-benchmarks flag as --benchmark runs all
+        .arg(
+            Arg::with_name("verify-contract-objects")
+                .long("verify-contract-objects")
+                .help("Verify essential contract objects (Package, Config, AdminCap) exist on Testnet."),
+        )
+        .arg(
+            Arg::with_name("setup-quorum")
+                .long("setup-quorum")
+                .help("Set up the initial quorum configuration on the Testnet contract (requires AdminCap owner). Requires 10 nodes simulation."),
+        )
+        .arg(
+            Arg::with_name("output-dir")
+                .long("output-dir")
+                .takes_value(true)
+                .default_value("benchmark_results_100_iter") // Default to the final results dir
+                .help("Directory to save benchmark results."),
+        )
+        .arg(
+            Arg::with_name("network")
+                .long("network")
+                .takes_value(true)
+                .possible_values(&["testnet", "devnet", "local"]) // Add mainnet later if needed
+                .default_value("testnet")
+                .help("Specify the Sui network to connect to (testnet, devnet, local)."),
+        )
         .get_matches();
-    
+
+    let output_dir = matches.value_of("output-dir").unwrap(); // Clap ensures default
+    let network_arg = matches.value_of("network").unwrap();
+
+    println!("--- SUI Modular Middleware --- Version: {} ---", env!("CARGO_PKG_VERSION"));
+
+    // Handle special commands first (verify, setup)
+    if matches.is_present("verify-contract-objects") {
+        println!("Verifying essential contract objects on {}...", network_arg);
+        let rpc_url = match network_arg {
+            "testnet" => config::SUI_TESTNET_RPC,
+            // Add URLs for devnet/local if needed, or use a NetworkManager approach
+            _ => return Err(anyhow!("Network '{}' RPC URL not configured for verification.", network_arg).into()),
+        };
+        let client = SuiClientBuilder::default().build(rpc_url).await?;
+        // Call a hypothetical verification function (needs implementation if TransactionHandler one removed)
+        match verify_contract_setup(&client).await {
+            Ok(_) => println!("✅ Contract objects verified successfully on {}!", network_arg),
+            Err(e) => {
+                eprintln!("❌ Contract object verification failed: {}", e);
+                // Return error to indicate failure
+                 return Err(e.into());
+            }
+        }
+        return Ok(()); // Exit after verification
+    }
+
+    if matches.is_present("setup-quorum") {
+         println!("Attempting to set up quorum configuration on {}...", network_arg);
+         let rpc_url = match network_arg {
+            "testnet" => config::SUI_TESTNET_RPC,
+            _ => return Err(anyhow!("Network '{}' RPC URL not configured for quorum setup.", network_arg).into()),
+         };
+         let sui_client = SuiClientBuilder::default().build(rpc_url).await?;
+
+         // Quorum setup requires interaction; consider moving this to a dedicated tool/script
+         // or carefully implementing it here.
+         match setup_onchain_quorum_config(&sui_client).await {
+             Ok(_) => println!("✅ Quorum configuration set up successfully on {}!", network_arg),
+             Err(e) => {
+                 eprintln!("❌ Failed to set up quorum configuration: {:#}", e); // Detailed error
+                  return Err(e.into());
+             }
+         }
+         return Ok(()); // Exit after setup
+     }
+
+    // If benchmark flag is provided, run the benchmark suite.
     if matches.is_present("benchmark") {
-        let output_dir = matches.value_of("output-dir").unwrap();
-        println!("Running comprehensive benchmarks...");
-        return tools::benchmark_suite::run_comprehensive_benchmarks(output_dir).await;
+        println!(
+            "Running comprehensive benchmarks on {}. Output will be saved to: {}",
+            network_arg, output_dir
+        );
+        // Pass network info if benchmarks need it, otherwise assume testnet focus
+        return benchmark_suite::run_comprehensive_benchmarks(output_dir).await;
     }
-    
-    // Load environment variables if present
-    dotenv::dotenv().ok();
-    
-    // Create output directory for metrics, charts, and documentation
-    let output_dir = "performance_results";
-    if !Path::new(output_dir).exists() {
-        fs::create_dir(output_dir)?;
-    }
-    
-    // Create docs directory for documentation
-    let docs_dir = "docs";
-    if !Path::new(docs_dir).exists() {
-        fs::create_dir(docs_dir)?;
-    }
-    
-    // Initialize security audit log
-    let security_audit_log = SecurityAuditLog::new();
-    
-    // Initialize network manager
-    let network_type = match env::var("SUI_NETWORK_TYPE").unwrap_or_else(|_| "testnet".to_string()).as_str() {
-        "mainnet" => NetworkType::Mainnet,
+
+    // --- Default Execution: Run Demos --- 
+    println!(
+        "Starting middleware in DEMO mode on {}...",
+        network_arg
+    );
+    dotenv::dotenv().ok(); // Load .env file if present
+
+    // Initialize shared components
+    let security_audit_log = Arc::new(SecurityAuditLog::new());
+    let network_type = match network_arg {
         "devnet" => NetworkType::Devnet,
         "local" => NetworkType::Local,
-        _ => NetworkType::Testnet,
+        _ => NetworkType::Testnet, // Default to testnet
     };
 
-    let network_manager = NetworkManager::new(network_type);
+    println!("Initializing components for network: {:?}...", network_type);
+    let network_manager = Arc::new(NetworkManager::new(network_type.clone()).await?);
     let rpc_url = network_manager.get_active_rpc_url()?;
-
-    // Initialize verification manager
     let verification_manager = VerificationManager::new(&rpc_url);
-    
-    // Initialize Byzantine fault detector
-    let byzantine_detector = ByzantineDetector::new(
-        network_manager.get_active_config().rpc_endpoints.clone(),
-        Some(Arc::new(security_audit_log.clone())),
+    let byzantine_detector = Arc::new(ByzantineDetector::new(
+        network_manager.get_active_config().get_rpc_endpoints().clone(),
+        Some(security_audit_log.clone()),
         None,
         None,
-    );
-    
-    // Initialize cross-chain mapper
-    let chain_mapper = create_chain_mapper(
-        Arc::new(network_manager.clone()),
-        Some(Arc::new(security_audit_log.clone()))
+    ));
+    // Unused variable warnings suppressed with `_`
+    let _chain_mapper = create_chain_mapper(network_manager.clone(), Some(security_audit_log.clone()))?;
+    let _weather_oracle = create_weather_oracle(
+        Some(security_audit_log.clone()),
+        Some(Duration::from_secs(300)), // Cache duration
+        Some(Duration::from_secs(60)), // Update interval
     )?;
-    
-    // Initialize Oracle Manager
-    let weather_oracle = create_weather_oracle(
-        Some(Arc::new(security_audit_log.clone()))
-    )?;
-    
-    // Initialize formal verification framework
-    let verification_framework = create_verification_framework(
-        Some(Arc::new(security_audit_log.clone()))
-    );
+    let _verification_framework = create_verification_framework(Some(security_audit_log.clone()));
 
-    // Log startup security event
     security_audit_log.log_network(
-        "main", 
-        &format!("Middleware started with network type: {}", network_type),
-        Some(&network_manager.get_active_config().chain_id),
-        AuditSeverity::Info
+        "main",
+        &format!("Middleware demo mode started on network: {:?}", network_type),
+        network_manager.get_active_config().get_chain_id().as_deref(),
+        AuditSeverity::Info,
     )?;
 
-    // Initialize metrics storage
-    let metrics_storage = MetricsStorage::new();
+    let metrics_storage = Arc::new(MetricsStorage::new());
+    // Quorum simulation (e.g., 5 nodes for demos)
+    let quorum_sim = Arc::new(QuorumSimulation::create_with_random_nodes(5)?);
 
-    // Generate keypair
-    let keypair_bytes = base64::decode(PUBLIC_KEY)
-        .map_err(|e| anyhow!("Failed to decode base64 key: {}", e))?;
-    
-    let mut rng = OsRng;
-    let keypair = if keypair_bytes.len() == 32 {
-        PublicKey::from_bytes(&keypair_bytes)
-            .map_err(|e| anyhow!("Failed to create public key: {}", e))?;
-        println!("Warning: Only public key available. Generating new keypair for testing.");
-        Keypair::generate(&mut rng)
-    } else {
-        Keypair::generate(&mut rng)
-    };
+    // Load keys and objects needed for demos
+    // Use load_submitter_keypair which handles env vars and fallbacks
+    let submitter_keypair = load_submitter_keypair().context("Failed to load submitter keypair for demos")?;
+    let submitter_address = SuiAddress::from(&submitter_keypair.public());
+    // Gas object ID also loaded via env var or config constant
+    let gas_object_id = ObjectID::from_str(config::SUBMITTER_GAS_OBJECT_ID)
+         .context("Invalid SUBMITTER_GAS_OBJECT_ID in config or env var")?;
 
-    // Initialize system components
-    let transaction_handler = TransactionHandler::new(
-        keypair, 
-        Some(verification_manager.clone()), 
-        Some(security_audit_log.clone())
+    println!("Demo Submitter Address: {}", submitter_address);
+    println!("Demo Gas Object ID: {}", gas_object_id);
+
+    // Initialize core components
+    let sui_client = Arc::new(SuiClientBuilder::default().build(&rpc_url).await?);
+    let transaction_handler = Arc::new(
+        TransactionHandler::new(
+            load_submitter_keypair().context("Failed to load keypair for TransactionHandler")?, // Load fresh keypair
+            Some(verification_manager.clone()), // Clone VM if needed
+            Some(security_audit_log.clone()),
+            Some(byzantine_detector.clone()),
+            quorum_sim.clone(),
+            sui_client.clone(),
+        )
+        .await?,
     );
-    let sequencing_layer = SequencingLayer::new();
-    let execution_manager = ExecutionManager::new(
-        Some(verification_manager.clone()), 
-        Some(Arc::new(network_manager.clone())), 
-        Some(Arc::new(security_audit_log.clone()))
-    );    
-    let fallback_manager = FallbackManager::new();
+    let execution_manager = Arc::new(ExecutionManager::new(
+        Some(verification_manager.clone()), // Pass clone of VM
+        Some(network_manager.clone()),
+        Some(security_audit_log.clone()),
+    ));
+    // Unused fallback manager
+    // let _fallback_manager = Arc::new(FallbackManager::new());
+    // Unused sequencing layer
+    // let _sequencing_layer = Arc::new(SequencingLayer::new());
 
-    println!("SUI Modular Middleware started with enhanced security features:");
-    println!("- Multi-language Support (JavaScript, Python)");
-    println!("- Formal Security Model with Verification");
-    println!("- Byzantine Fault Detection");
-    println!("- External Data Oracle Framework");
-    println!("- Cross-Chain Transaction Portability");
-    println!("- Comprehensive Security Audit Logging");
-    println!("- Performance Measurement Framework");
+    println!("\n--- Running Middleware Demos ---");
+    println!("(These demos showcase different transaction types and execution paths)");
 
-    // Generate security documentation
-    let security_model = SecurityModel::new();
+    // Generate and save security documentation (can be moved elsewhere)
+    // let _security_model = security::model::SecurityModel::new(); // Removed unused var
     let security_docs = generate_security_documentation();
-    
-    // Save security documentation to file
-    let security_docs_path = format!("{}/security-model.md", docs_dir);
+    let docs_dir = "docs";
+    fs::create_dir_all(docs_dir)?;
+    let security_docs_path = Path::new(docs_dir).join("security-model-generated.md");
     fs::write(&security_docs_path, security_docs)?;
-    println!("Security model documentation generated: {}", security_docs_path);
-    
-    // Run performance tests
-    println!("\n=== RUNNING PERFORMANCE TESTS WITH SECURITY VALIDATION ===");
-    println!("Each transaction type will be run multiple times to gather performance metrics.");
-    
-    // Run each demo multiple times with performance tracking
-    for i in 1..=3 {
-        println!("\nTest Iteration {} of 3", i);
-        
-        // Reset account balances at the start of each iteration
-        execution_manager.reset_account_balances();
+    println!("Generated security model documentation: {}", security_docs_path.display());
 
-        // Weather-based demo
-        run_weather_based_transaction_demo(&transaction_handler, &execution_manager, Some(&metrics_storage)).await?;
-        
-        // Python transaction demo
-        run_python_transaction_demo(&transaction_handler, &execution_manager, Some(&metrics_storage), &security_audit_log).await?;
-        
-        // JavaScript transaction demo
-        run_js_transaction_demo(&transaction_handler, &execution_manager, Some(&metrics_storage), &security_audit_log).await?;
-        
-        // Flight delay insurance demo
-        run_flight_delay_demo(&transaction_handler, &execution_manager, Some(&metrics_storage)).await?;
-        
-        // Enhanced flight insurance demo with security features
-        run_enhanced_flight_insurance_demo(
-            &transaction_handler,
-            &execution_manager,
-            Some(&metrics_storage),
-            &security_audit_log,
-            &verification_manager,
-            &network_manager
-        ).await?;
-    }
-    
-    // Demonstrate security verification
-    demonstrate_security_verification(&verification_framework)?;
-    
-    // Demonstrate cross-chain mapping
-    // Create a simple transaction for demonstration
-    let demo_tx = Transaction {
-        tx_type: TransactionType::Transfer,
-        sender: "0x123".to_string(),
-        receiver: "0x456".to_string(),
-        amount: 100,
-        gas_payment: "0x789".to_string(),
-        gas_budget: 1000,
-        commands: vec!["transfer".to_string()],
+    // --- Run Demos --- 
+    // Note: The process_and_submit_verification utility now orchestrates the flow.
+    // It needs the submitter keypair and gas object ID.
+
+    // JS Demo
+    let js_script = r#"({"shouldExecute": true, "outcome": "js_ok"})"#; // Use raw string literal
+    let js_txn = Transaction {
+        tx_type: TransactionType::Custom("js_demo".to_string()),
+        sender: submitter_address.to_string(),
+        receiver: submitter_address.to_string(),
+        amount: 0,
+        gas_payment: gas_object_id.to_string(),
+        gas_budget: 100_000_000, // Use consistent high budget
+        commands: vec![],
         signatures: None,
-        timestamp: chrono::Utc::now().timestamp() as u64,
-        script: None,
+        timestamp: 0, // Timestamp handled by Transaction::new or digest
+        script: Some(js_script.to_string()),
+        language: Some("javascript".to_string()),
         external_query: None,
         python_code: None,
         python_params: None,
         websocket_endpoint: None,
         websocket_message: None,
         time_condition: None,
-        language: None,
     };
-    
-    demonstrate_cross_chain_mapping(&demo_tx, &chain_mapper).await.unwrap_or_else(|e| {
-        println!("Cross-chain mapping demonstration error: {}", e);
-    });
-    
-    // Save performance metrics to file
-    let metrics_file = format!("{}/performance_metrics.json", output_dir);
-    metrics_storage.save_to_json_file(&metrics_file)?;
-    
-    // Print summary statistics
-    metrics_storage.print_summary();
-    
-    println!("\nPerformance metrics saved to {}", metrics_file);
-    println!("To generate visualization, run:");
-    println!("python tools/visualize_performance.py {} {}/performance_chart.png", metrics_file, output_dir);
+    if let Err(e) = process_and_submit_verification(
+        &js_txn,
+        "JavaScript Demo",
+        &transaction_handler,
+        &execution_manager,
+        Some(&metrics_storage),
+        &security_audit_log,
+        &load_submitter_keypair().context("Failed to load keypair for JS Demo")?,
+        &gas_object_id,
+    ).await {
+        eprintln!("ERROR in JavaScript Demo: {:#}", e);
+    }
 
-    // Poll transactions from the blockchain
-    println!("\nPolling for ordered transactions with security validation...");
-    match sequencing_layer.poll_transactions().await {
-        Ok(transactions) => {
-            println!("Polled {} transaction(s).", transactions.len());
-            for mut tx in transactions {
-                println!("Processing polled transaction: {:?}", tx);
-                if let Ok(true) = transaction_handler.validate_transaction(&tx, None).await {
-                    println!("Validated polled transaction");
-                    if let Ok(wrapped_tx) = transaction_handler.wrap_transaction(tx.clone(), None) {
-                        if let Ok(_signature) = transaction_handler.sign_transaction(&wrapped_tx) {
-                            println!("Polled transaction signed: {:?}", _signature);
-                            
-                            // Register for verification
-                            let mock_digest = format!("polled_tx_{}", rand::random::<u64>());
-                            transaction_handler.register_for_verification(&tx, &mock_digest)?;
-                            
-                            match execution_manager.execute_transaction(&mut tx, None).await {
-                                Ok(true) => {
-                                    println!("Transaction executed successfully.");
-                                    
-                                    // Verify transaction
-                                    match transaction_handler.verify_transaction(&mock_digest, None).await {
-                                        Ok(VerificationStatus::Verified) => {
-                                            println!("Transaction verified successfully.");
-                                        },
-                                        Ok(status) => {
-                                            println!("Transaction verification status: {:?}", status);
-                                        },
-                                        Err(e) => {
-                                            println!("Error verifying transaction: {}", e);
-                                            fallback_manager.log_error();
-                                        }
-                                    }
-                                },
-                                Ok(false) => println!("Transaction condition failed."),
-                                Err(e) => {
-                                    println!("Execution error: {}", e);
-                                    fallback_manager.log_error();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            println!("Error polling transactions: {}", e);
-            fallback_manager.log_error();
-        }
+    // Python Demo
+    let python_script = r#"result = {"should_execute": True, "outcome": "python_ok"}"#;
+    let python_txn = Transaction {
+        tx_type: TransactionType::Custom("python_demo".to_string()),
+        sender: submitter_address.to_string(),
+        receiver: submitter_address.to_string(),
+        amount: 0,
+        gas_payment: gas_object_id.to_string(),
+        gas_budget: 100_000_000,
+        commands: vec![],
+        signatures: None,
+        timestamp: 0,
+        script: None,
+        language: Some("python".to_string()),
+        python_code: Some(python_script.to_string()),
+        python_params: None,
+        external_query: None,
+        websocket_endpoint: None,
+        websocket_message: None,
+        time_condition: None,
+    };
+     if let Err(e) = process_and_submit_verification(
+        &python_txn,
+        "Python Demo",
+        &transaction_handler,
+        &execution_manager,
+        Some(&metrics_storage),
+        &security_audit_log,
+        &load_submitter_keypair().context("Failed to load keypair for Python Demo")?,
+        &gas_object_id,
+    ).await {
+         eprintln!("ERROR in Python Demo: {:#}", e);
+     }
+
+    // Weather Demo
+     if let Err(e) = run_weather_based_transaction_demo(
+        &transaction_handler,
+        &execution_manager,
+        Some(&metrics_storage),
+        &security_audit_log,
+        &load_submitter_keypair().context("Failed to load keypair for Weather Demo")?,
+        &gas_object_id,
+    ).await {
+         eprintln!("ERROR in Weather Demo: {:#}", e);
+     }
+
+    // Flight Delay Demo
+    if let Err(e) = run_flight_delay_demo(
+        &transaction_handler,
+        &execution_manager,
+        Some(&metrics_storage),
+        &security_audit_log,
+        &load_submitter_keypair().context("Failed to load keypair for Flight Delay Demo")?,
+        &gas_object_id,
+    ).await {
+        eprintln!("ERROR in Flight Delay Demo: {:#}", e);
     }
-    
-    // Print security audit summary
-    let events = security_audit_log.get_events();
-    println!("\n=== SECURITY AUDIT SUMMARY ===");
-    println!("Total security events: {}", events.len());
-    
-    // Group events by type
-    let mut event_types = std::collections::HashMap::new();
-    for event in &events {
-        let count = event_types.entry(format!("{:?}", event.event_type)).or_insert(0);
-        *count += 1;
+
+    // Enhanced Flight Insurance Demo
+    // Needs Arc<VerificationManager> and Arc<NetworkManager>
+    let vm_arc = Arc::new(verification_manager); // Create Arc for this call
+    let nm_arc = network_manager; // Already an Arc
+    if let Err(e) = run_enhanced_flight_insurance_demo(
+        &transaction_handler,
+        &execution_manager,
+        Some(&metrics_storage),
+        &security_audit_log,
+        &vm_arc, // Pass Arc
+        &nm_arc, // Pass Arc
+        &load_submitter_keypair().context("Failed to load keypair for Flight Insurance Demo")?,
+        &gas_object_id,
+    ).await {
+        eprintln!("ERROR in Enhanced Flight Insurance Demo: {:#}", e);
     }
-    
-    // Print event type counts
-    println!("\nEvent types:");
-    for (event_type, count) in event_types {
-        println!("  {}: {}", event_type, count);
-    }
-    
-    // Group events by severity
-    let mut event_severities = std::collections::HashMap::new();
-    for event in &events {
-        let count = event_severities.entry(format!("{:?}", event.severity)).or_insert(0);
-        *count += 1;
-    }
-    
-    // Print severity counts
-    println!("\nEvent severities:");
-    for (severity, count) in event_severities {
-        println!("  {}: {}", severity, count);
-    }
-    
-    // Print final execution state
-    {
-        let state = execution_manager.state.lock().unwrap();
-        println!("\nFinal execution state (account balances):");
-        for (address, balance) in state.iter() {
-            println!("  {}: {}", address, balance);
-        }
-    }
-    
+
+    // --- Deprecated Demo Calls --- 
+    // demonstrate_security_verification(&_verification_framework)?;
+    // demonstrate_cross_chain_mapping(&demo_tx, &_chain_mapper).await... ;
+    // Removed deprecated metric saving/printing calls
+    println!("\n--- DEMOS COMPLETE ---");
+    println!("(Note: Old PerformanceMetrics are deprecated; use benchmark results for analysis.)");
+
+    // Print final audit summary
+    print_audit_summary(&security_audit_log);
+
     Ok(())
+}
+
+/// Placeholder function to verify contract setup (replace with actual logic or remove)
+async fn verify_contract_setup(client: &SuiClient) -> Result<()> {
+    println!("Placeholder verification: Check config.rs for required object IDs.");
+    let package_id = ObjectID::from_str(config::VERIFICATION_CONTRACT_PACKAGE_ID)
+        .context("Reading package ID from config")?;
+    client.read_api().get_object_with_options(package_id, SuiObjectDataOptions::new()).await // Used import
+        .map_err(|e| anyhow!("Failed to get package object {}: {}", package_id, e))
+        .and_then(|resp| if resp.data.is_some() { Ok(()) } else { Err(anyhow!("Package object {} not found", package_id)) })?;
+
+    let config_id = ObjectID::from_str(config::VERIFICATION_CONTRACT_CONFIG_OBJECT_ID)
+         .context("Reading config ID from config")?;
+    client.read_api().get_object_with_options(config_id, SuiObjectDataOptions::new()).await // Used import
+         .map_err(|e| anyhow!("Failed to get config object {}: {}", config_id, e))
+         .and_then(|resp| if resp.data.is_some() { Ok(()) } else { Err(anyhow!("Config object {} not found", config_id)) })?;
+
+    let admin_cap_id = ObjectID::from_str(config::VERIFICATION_CONTRACT_ADMIN_CAP_ID)
+         .context("Reading admin cap ID from config")?;
+    client.read_api().get_object_with_options(admin_cap_id, SuiObjectDataOptions::new()).await // Used import
+         .map_err(|e| anyhow!("Failed to get admin cap object {}: {}", admin_cap_id, e))
+         .and_then(|resp| if resp.data.is_some() { Ok(()) } else { Err(anyhow!("Admin cap object {} not found", admin_cap_id)) })?;
+
+    Ok(())
+}
+
+/// Placeholder function for setting up quorum config on-chain (replace or remove)
+async fn setup_onchain_quorum_config(_client: &SuiClient) -> Result<()> { // Prefixed client with _
+     println!("Placeholder setup: This action requires interaction and careful implementation.");
+     println!("Ensure you own the AdminCap ({}) and have gas.", config::VERIFICATION_CONTRACT_ADMIN_CAP_ID);
+     println!("Simulating 10 nodes with 2/3+1 threshold for setup.");
+     // Placeholder logic: Load keys, build PTB, submit
+     // This requires importing TransactionHandler and related types, or replicating the logic.
+     // For now, just return an error indicating it's not implemented here.
+     Err(anyhow!("On-chain quorum setup not fully implemented in main.rs. Use TransactionHandler method or dedicated script."))
+}
+
+/// Prints a summary of recorded security audit events.
+fn print_audit_summary(security_audit_log: &Arc<SecurityAuditLog>) {
+     let events = security_audit_log.get_events();
+     println!("\n--- Security Audit Summary ---");
+     println!("Total Events Recorded: {}", events.len());
+
+     let mut event_types: HashMap<AuditEventType, usize> = HashMap::new(); // Used import
+     let mut event_severities: HashMap<AuditSeverity, usize> = HashMap::new();
+
+     for event in &events {
+         *event_types.entry(event.event_type.clone()).or_insert(0) += 1;
+         *event_severities.entry(event.severity.clone()).or_insert(0) += 1;
+     }
+
+     println!("\nEvents by Type:");
+     if event_types.is_empty() {
+         println!("  (No events)");
+     } else {
+         let mut sorted_types: Vec<_> = event_types.into_iter().collect();
+         sorted_types.sort_by_key(|k| format!("{:?}", k.0));
+         for (event_type, count) in sorted_types {
+             println!("  - {:<25}: {}", format!("{:?}", event_type), count);
+         }
+     }
+
+     println!("\nEvents by Severity:");
+     if event_severities.is_empty() {
+         println!("  (No events)");
+     } else {
+        let mut sorted_severities: Vec<_> = event_severities.into_iter().collect();
+        sorted_severities.sort_by_key(|k| k.0.clone());
+        for (severity, count) in sorted_severities {
+            println!("  - {:<10}: {}", format!("{:?}", severity).to_uppercase(), count);
+        }
+     }
+     println!("---------------------------");
 }

@@ -1,11 +1,14 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use rand::{thread_rng, Rng};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use crate::sui::byzantine::{NodeResponse, NodeResponseStatus};
+use std::sync::Arc;
 use crate::security::audit::{SecurityAuditLog, AuditSeverity, AuditEventType};
+use std::collections::HashMap;
+use tokio::sync::Mutex;
+
+// Import Byzantine detector types with renamed imports to avoid conflicts
+use crate::sui::byzantine::{NodeResponse, NodeResponseStatus, ByzantineDetector};
 
 /// Simulates Byzantine behavior for testing and benchmarking
 pub struct ByzantineSimulator {
@@ -32,6 +35,21 @@ pub enum ByzantineBehavior {
     Unavailability(f64),
     /// Node gives inconsistent responses with given probability
     Inconsistency(f64),
+}
+
+/// Result of a byzantine detection operation
+#[derive(Debug, Clone)]
+pub struct DetectionResult {
+    /// Timestamp of the detection
+    pub timestamp: u64,
+    /// Number of nodes analyzed
+    pub nodes_analyzed: usize,
+    /// Number of nodes flagged as byzantine
+    pub byzantine_nodes: usize,
+    /// List of byzantine node IDs
+    pub byzantine_node_ids: Vec<String>,
+    /// Detection details
+    pub details: String,
 }
 
 impl ByzantineSimulator {
@@ -74,187 +92,44 @@ impl ByzantineSimulator {
         endpoints
     }
     
-    /// Query all nodes for a transaction digest
-    pub async fn query_transaction(&self, digest: &str) -> Result<Vec<NodeResponse>> {
+    /// Simulate responses from nodes (for testing byzantine behavior)
+    pub async fn simulate_responses(&self, _endpoint: &str, node_count: usize) -> Vec<NodeResponse> {
         let mut responses = Vec::new();
-        
-        // First query honest nodes
-        for endpoint in &self.normal_nodes {
-            match self.query_honest_node(endpoint, digest).await {
-                Ok(data) => {
-                    let response_time = thread_rng().gen_range(50, 150);
-                    responses.push(NodeResponse {
-                        node_url: endpoint.clone(),
-                        status: NodeResponseStatus::Valid,
-                        data: Some(data),
-                        error: None,
-                        response_time_ms: Some(response_time),
-                        timestamp: Instant::now(),
-                    });
-                },
-                Err(e) => {
-                    responses.push(NodeResponse {
-                        node_url: endpoint.clone(),
-                        status: NodeResponseStatus::Unavailable,
-                        data: None,
-                        error: Some(e.to_string()),
-                        response_time_ms: None,
-                        timestamp: Instant::now(),
-                    });
-                }
-            }
-        }
-        
-        // Then query Byzantine nodes (with simulated behaviors)
-        for node in &self.byzantine_nodes {
-            match self.query_byzantine_node(node, digest).await {
-                Ok(response) => responses.push(response),
-                Err(e) => {
-                    if let Some(audit_log) = &self.audit_log {
-                        audit_log.add_event(
-                            "ByzantineSimulator",
-                            AuditEventType::SecurityError, 
-                            AuditSeverity::Warning,
-                            &format!("Error from Byzantine node {}: {}", node.endpoint, e)
-                        );
-                    }
-                }
-            }
-        }
-        
-        Ok(responses)
-    }
-    
-    /// Query an honest node for transaction data
-    async fn query_honest_node(&self, endpoint: &str, digest: &str) -> Result<Value> {
-        // This is a simulation - in reality this would make an actual RPC call
-        // Create a simulated honest response
         let mut rng = thread_rng();
         
-        // Simulate different transaction types
-        let transaction_type = match rng.gen_range(0, 3) {
-            0 => "transfer",
-            1 => "invoke",
-            _ => "custom",
-        };
+        let majority_data = format!("{}", rng.gen_range(1, 1000));
         
-        // Create a fake valid response
-        let response = json!({
-            "digest": digest,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-            "transaction": {
-                "type": transaction_type,
-                "sender": format!("0x{:x}", rng.gen::<u64>()),
-                "receiver": format!("0x{:x}", rng.gen::<u64>()),
-                "amount": rng.gen_range(1, 1000),
-                "gas_fee": rng.gen_range(1, 50),
-            },
-            "status": "success",
-            "block_height": rng.gen_range(1000, 10000),
-            "confirmed": true
-        });
-        
-        Ok(response)
-    }
-    
-    /// Query a Byzantine node with simulated faulty behavior
-    async fn query_byzantine_node(&self, node: &ByzantineNode, digest: &str) -> Result<NodeResponse> {
-        let mut rng = thread_rng();
-        let start_time = Instant::now();
-        
-        // First get a legitimate response
-        let base_data = self.query_honest_node(&node.endpoint, digest).await?;
-        
-        // Apply Byzantine behavior based on node type
-        match &node.behavior {
-            ByzantineBehavior::DataManipulation(probability) => {
-                if rng.gen::<f64>() < *probability {
-                    // Manipulate the data
-                    let mut data = base_data.clone();
-                    
-                    // Change transaction amount or other fields
-                    if let Some(obj) = data.as_object_mut() {
-                        if let Some(tx) = obj.get_mut("transaction") {
-                            if let Some(tx_obj) = tx.as_object_mut() {
-                                if let Some(amount) = tx_obj.get_mut("amount") {
-                                    // Double the amount
-                                    if let Some(n) = amount.as_u64() {
-                                        *amount = json!(n * 2);
-                                    }
-                                }
-                                
-                                // Change the transaction type
-                                if let Some(tx_type) = tx_obj.get_mut("type") {
-                                    *tx_type = json!("manipulated");
-                                }
-                            }
-                        }
-                    }
-                    
-                    return Ok(NodeResponse {
-                        node_url: node.endpoint.clone(),
-                        status: NodeResponseStatus::Inconsistent,
-                        data: Some(data),
-                        error: None,
-                        response_time_ms: Some(start_time.elapsed().as_millis() as u64),
-                        timestamp: Instant::now(),
-                    });
-                }
-            },
-            ByzantineBehavior::TimingAttack(delay_ms) => {
-                // Simulate a delay
-                tokio::time::sleep(Duration::from_millis(*delay_ms)).await;
-                
-                return Ok(NodeResponse {
-                    node_url: node.endpoint.clone(),
-                    status: NodeResponseStatus::Delayed,
-                    data: Some(base_data),
+        for i in 0..node_count {
+            let node_id = format!("node_{}", i);
+            let is_byzantine = rng.gen::<f64>() < 0.2; // 20% chance of being byzantine
+            
+            let response = if is_byzantine {
+                // Generate different data for byzantine nodes
+                let byzantine_data = format!("{}", rng.gen_range(1001, 2000));
+                NodeResponse {
+                    node_url: node_id,
+                    status: NodeResponseStatus::Inconsistent,
+                    data: Some(serde_json::from_str(&byzantine_data).unwrap_or(serde_json::Value::Null)),
                     error: None,
-                    response_time_ms: Some(*delay_ms + start_time.elapsed().as_millis() as u64),
+                    response_time_ms: Some(rng.gen_range(100, 500)),
                     timestamp: Instant::now(),
-                });
-            },
-            ByzantineBehavior::Unavailability(probability) => {
-                if rng.gen::<f64>() < *probability {
-                    // Simulate node being unavailable
-                    return Ok(NodeResponse {
-                        node_url: node.endpoint.clone(),
-                        status: NodeResponseStatus::Unavailable,
-                        data: None,
-                        error: Some("Node is unavailable".to_string()),
-                        response_time_ms: Some(start_time.elapsed().as_millis() as u64),
-                        timestamp: Instant::now(),
-                    });
                 }
-            },
-            ByzantineBehavior::Inconsistency(probability) => {
-                if rng.gen::<f64>() < *probability {
-                    // Return malformed data
-                    return Ok(NodeResponse {
-                        node_url: node.endpoint.clone(),
-                        status: NodeResponseStatus::Malformed,
-                        data: Some(json!({
-                            "error": "Malformed response",
-                            "status": "error",
-                            "timestamp": chrono::Utc::now().to_rfc3339(),
-                        })),
-                        error: Some("Invalid response format".to_string()),
-                        response_time_ms: Some(start_time.elapsed().as_millis() as u64),
-                        timestamp: Instant::now(),
-                    });
+            } else {
+                // Generate consistent data for honest nodes
+                NodeResponse {
+                    node_url: node_id,
+                    status: NodeResponseStatus::Valid,
+                    data: Some(serde_json::from_str(&majority_data).unwrap_or(serde_json::Value::Null)),
+                    error: None,
+                    response_time_ms: Some(rng.gen_range(50, 200)),
+                    timestamp: Instant::now(),
                 }
-            },
+            };
+            
+            responses.push(response);
         }
         
-        // Default case: return honest response
-        Ok(NodeResponse {
-            node_url: node.endpoint.clone(),
-            status: NodeResponseStatus::Valid,
-            data: Some(base_data),
-            error: None,
-            response_time_ms: Some(start_time.elapsed().as_millis() as u64),
-            timestamp: Instant::now(),
-        })
+        responses
     }
 }
 

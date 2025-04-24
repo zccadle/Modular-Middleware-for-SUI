@@ -1,0 +1,256 @@
+[
+  {
+    "component_name": "end_to_end_refactored",
+    "security_level": "refactored",
+    "iterations": 100,
+    "duration_ms": 101861,
+    "avg_duration_per_iteration_ms": 1018.61,
+    "configuration": {
+      "num_transactions": "100",
+      "verification_success_rate": "1.000"
+    },
+    "operation_counts": {
+      "quorum_signing": 100,
+      "middleware_processing_and_prep": 100,
+      "l1_confirmation": 100,
+      "total_iteration": 100,
+      "l1_submission": 100
+    },
+    "operation_avg_times": {
+      "l1_confirmation": 10.93,
+      "total_iteration": 1018.07,
+      "middleware_processing_and_prep": 0.0,
+      "quorum_signing": 0.0,
+      "l1_submission": 1006.72
+    },
+    "operation_median_times": {
+      "l1_submission": 905.0,
+      "l1_confirmation": 11.0,
+      "quorum_signing": 0.0,
+      "total_iteration": 916.5,
+      "middleware_processing_and_prep": 0.0
+    }
+  },
+  {
+    "component_name": "byzantine_resilience_0",
+    "security_level": "0.0%_byzantine",
+    "iterations": 100,
+    "duration_ms": 111039,
+    "avg_duration_per_iteration_ms": 1110.39,
+    "configuration": {
+      "num_transactions": "100",
+      "failure_reason_not_enough_signatures": "0",
+      "failure_reason_signing_error": "0",
+      "failure_reason_l1_execution": "0",
+      "failure_reason_l1_rpc": "0",
+      "byzantine_percentage": "0",
+      "verification_success_rate": "1.000"
+    },
+    "operation_counts": {
+      "l1_submission": 100,
+      "middleware_processing_and_prep": 100,
+      "l1_confirmation": 100,
+      "quorum_signing": 100,
+      "total_iteration": 100
+    },
+    "operation_avg_times": {
+      "quorum_signing": 0.0,
+      "l1_submission": 1098.44,
+      "middleware_processing_and_prep": 0.0,
+      "l1_confirmation": 10.9,
+      "total_iteration": 1109.89
+    },
+    "operation_median_times": {
+      "quorum_signing": 0.0,
+      "l1_submission": 929.0,
+      "l1_confirmation": 11.0,
+      "middleware_processing_and_prep": 0.0,
+      "total_iteration": 940.0
+    }
+  },
+  {
+    "component_name": "byzantine_resilience_10",
+    "security_level": "10.0%_byzantine",
+    "iterations": 100,
+    "duration_ms": 103375,
+    "avg_duration_per_iteration_ms": 1033.75,
+    "configuration": {
+      "num_transactions": "100",
+      "byzantine_percentage": "0.1",
+      "failure_reason_signing_error": "0",
+      "verification_success_rate": "0.970",
+      "failure_reason_not_enough_signatures": "3",
+      "failure_reason_l1_execution": "0",
+      "failure_reason_l1_rpc": "0"
+    },
+    "operation_counts": {
+      "quorum_signing": 100,
+      "l1_confirmation": 100,
+      "total_iteration": 100,
+      "middleware_processing_and_prep": 100,
+      "l1_submission": 100
+    },
+    "operation_avg_times": {
+      "l1_confirmation": 10.62,
+      "l1_submission": 1022.23,
+      "total_iteration": 1033.24,
+      "quorum_signing": 0.0,
+      "middleware_processing_and_prep": 0.0
+    },
+    "operation_median_times": {
+      "l1_submission": 919.0,
+      "l1_confirmation": 11.0,
+      "middleware_processing_and_prep": 0.0,
+      "total_iteration": 930.0,
+      "quorum_signing": 0.0
+    }
+  },
+  {
+    "component_name": "byzantine_resilience_20",
+    "security_level": "20.0%_byzantine",
+    "iterations": 100,
+    "duration_ms": 89080,
+    "avg_duration_per_iteration_ms": 890.8,
+    "configuration": {
+      "num_transactions": "100",
+      "byzantine_percentage": "0.2",
+      "verification_success_rate": "0.910",
+      "failure_reason_signing_error": "0",
+      "failure_reason_not_enough_signatures": "9",
+      "failure_reason_l1_rpc": "0",
+      "failure_reason_l1_execution": "0"
+    },
+    "operation_counts": {
+      "quorum_signing": 100,
+      "total_iteration": 100,
+      "l1_submission": 100,
+      "l1_confirmation": 100,
+      "middleware_processing_and_prep": 100
+    },
+    "operation_avg_times": {
+      "l1_submission": 880.05,
+      "l1_confirmation": 9.94,
+      "total_iteration": 890.29,
+      "middleware_processing_and_prep": 0.0,
+      "quorum_signing": 0.0
+    },
+    "operation_median_times": {
+      "quorum_signing": 0.0,
+      "l1_confirmation": 11.0,
+      "middleware_processing_and_prep": 0.0,
+      "total_iteration": 894.0,
+      "l1_submission": 882.5
+    }
+  },
+  {
+    "component_name": "byzantine_resilience_33",
+    "security_level": "33.0%_byzantine",
+    "iterations": 100,
+    "duration_ms": 81231,
+    "avg_duration_per_iteration_ms": 812.31,
+    "configuration": {
+      "byzantine_percentage": "0.33",
+      "failure_reason_not_enough_signatures": "14",
+      "failure_reason_l1_execution": "0",
+      "failure_reason_l1_rpc": "0",
+      "num_transactions": "100",
+      "verification_success_rate": "0.860",
+      "failure_reason_signing_error": "0"
+    },
+    "operation_counts": {
+      "l1_confirmation": 100,
+      "middleware_processing_and_prep": 100,
+      "l1_submission": 100,
+      "total_iteration": 100,
+      "quorum_signing": 100
+    },
+    "operation_avg_times": {
+      "l1_confirmation": 9.4,
+      "middleware_processing_and_prep": 0.0,
+      "l1_submission": 802.08,
+      "total_iteration": 811.85,
+      "quorum_signing": 0.0
+    },
+    "operation_median_times": {
+      "l1_submission": 870.5,
+      "middleware_processing_and_prep": 0.0,
+      "l1_confirmation": 11.0,
+      "quorum_signing": 0.0,
+      "total_iteration": 881.5
+    }
+  },
+  {
+    "component_name": "byzantine_resilience_50",
+    "security_level": "50.0%_byzantine",
+    "iterations": 100,
+    "duration_ms": 59609,
+    "avg_duration_per_iteration_ms": 596.09,
+    "configuration": {
+      "failure_reason_not_enough_signatures": "41",
+      "verification_success_rate": "0.590",
+      "failure_reason_l1_execution": "0",
+      "failure_reason_l1_rpc": "0",
+      "byzantine_percentage": "0.5",
+      "failure_reason_signing_error": "0",
+      "num_transactions": "100"
+    },
+    "operation_counts": {
+      "l1_submission": 100,
+      "middleware_processing_and_prep": 100,
+      "quorum_signing": 100,
+      "total_iteration": 100,
+      "l1_confirmation": 100
+    },
+    "operation_avg_times": {
+      "middleware_processing_and_prep": 0.0,
+      "l1_confirmation": 6.44,
+      "quorum_signing": 0.0,
+      "total_iteration": 595.76,
+      "l1_submission": 589.07
+    },
+    "operation_median_times": {
+      "total_iteration": 854.0,
+      "quorum_signing": 0.0,
+      "l1_confirmation": 11.0,
+      "l1_submission": 843.0,
+      "middleware_processing_and_prep": 0.0
+    }
+  },
+  {
+    "component_name": "byzantine_resilience_75",
+    "security_level": "75.0%_byzantine",
+    "iterations": 100,
+    "duration_ms": 45593,
+    "avg_duration_per_iteration_ms": 455.93,
+    "configuration": {
+      "byzantine_percentage": "0.75",
+      "failure_reason_not_enough_signatures": "58",
+      "failure_reason_l1_rpc": "0",
+      "verification_success_rate": "0.420",
+      "failure_reason_signing_error": "0",
+      "num_transactions": "100",
+      "failure_reason_l1_execution": "0"
+    },
+    "operation_counts": {
+      "l1_submission": 100,
+      "middleware_processing_and_prep": 100,
+      "quorum_signing": 100,
+      "l1_confirmation": 100,
+      "total_iteration": 100
+    },
+    "operation_avg_times": {
+      "total_iteration": 455.73,
+      "middleware_processing_and_prep": 0.0,
+      "l1_confirmation": 4.55,
+      "quorum_signing": 0.0,
+      "l1_submission": 450.98
+    },
+    "operation_median_times": {
+      "middleware_processing_and_prep": 0.0,
+      "quorum_signing": 0.0,
+      "total_iteration": 0.0,
+      "l1_confirmation": 0.0,
+      "l1_submission": 0.0
+    }
+  }
+]

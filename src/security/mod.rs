@@ -11,3 +11,5 @@ pub use model::{SecurityModel, TrustAssumption, SecurityThreat, SecurityGuarante
 pub use verification::{FormalProperty, PropertyType, VerificationStatus, VerificationResult, VerificationTechnique};
 pub use config::{SecurityConfiguration, SecurityLevel};
 pub use byzantine_simulator::{ByzantineSimulator, ByzantineNode, ByzantineBehavior};
+// Import Byzantine detector types directly from sui module
+pub use crate::sui::byzantine::{ByzantineDetector, NodeResponse, NodeResponseStatus};

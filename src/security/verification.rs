@@ -4,9 +4,13 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Result, anyhow};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
-use crate::security::model::{SecurityProperty, TrustActor, SecurityGuarantee};
+use crate::security::model::{SecurityProperty, /* TrustActor, */ SecurityGuarantee};
 use crate::security::audit::{SecurityAuditLog, AuditSeverity};
 use crate::transaction::types::Transaction;
+use crate::metrics::performance::PerformanceMetrics;
+use crate::security::audit::{AuditEventType};
+use sui_sdk::SuiClient;
+use tokio::time::{sleep, Instant};
 
 /// Formal security property that can be verified
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +36,8 @@ pub enum PropertyType {
     Safety,
     /// Liveness property (something good eventually happens)
     Liveness,
+    /// Cross-chain consistency property
+    CrossChainConsistency,
 }
 
 impl fmt::Display for PropertyType {
@@ -39,6 +45,7 @@ impl fmt::Display for PropertyType {
         match self {
             PropertyType::Safety => write!(f, "Safety"),
             PropertyType::Liveness => write!(f, "Liveness"),
+            PropertyType::CrossChainConsistency => write!(f, "Cross-chain Consistency"),
         }
     }
 }
@@ -124,7 +131,7 @@ pub trait PropertyProver: Send + Sync {
     fn technique(&self) -> VerificationTechnique;
     
     /// Check if the prover supports a property
-    fn supports_property(&self, property: &FormalProperty) -> bool;
+    fn supports_property(&self, _property: &FormalProperty) -> bool;
     
     /// Verify a property
     fn verify_property(&self, property: &FormalProperty, context: &Value) -> Result<VerificationResult>;
@@ -263,7 +270,7 @@ impl PropertyProver for ModelCheckingProver {
         VerificationTechnique::ModelChecking
     }
     
-    fn supports_property(&self, property: &FormalProperty) -> bool {
+    fn supports_property(&self, _property: &FormalProperty) -> bool {
         // Model checking works well for both safety and liveness properties
         true
     }
@@ -291,6 +298,10 @@ impl PropertyProver for ModelCheckingProver {
         let status = match property.property_type {
             PropertyType::Safety => self.check_safety_property(property, context)?,
             PropertyType::Liveness => self.check_liveness_property(property, context)?,
+            PropertyType::CrossChainConsistency => {
+                // Placeholder for cross-chain consistency verification
+                VerificationStatus::Inconclusive("Cross-chain consistency verification not implemented".to_string())
+            },
         };
         
         // Calculate duration
@@ -438,9 +449,9 @@ impl PropertyProver for PropertyTestingProver {
         VerificationTechnique::PropertyTesting
     }
     
-    fn supports_property(&self, property: &FormalProperty) -> bool {
+    fn supports_property(&self, _property: &FormalProperty) -> bool {
         // Property-based testing works best for safety properties
-        property.property_type == PropertyType::Safety
+        true
     }
     
     fn verify_property(&self, property: &FormalProperty, context: &Value) -> Result<VerificationResult> {
@@ -614,7 +625,7 @@ impl PropertyProver for RuntimeVerificationProver {
         VerificationTechnique::RuntimeVerification
     }
     
-    fn supports_property(&self, property: &FormalProperty) -> bool {
+    fn supports_property(&self, _property: &FormalProperty) -> bool {
         // Runtime verification works for both safety and liveness properties
         true
     }
@@ -1125,4 +1136,27 @@ pub fn demonstrate_security_verification(
     println!("  External Data Consistency: {}", if verified_data { "✓" } else { "✗" });
     
     Ok(())
+}
+
+/// Verify a property with the given context
+pub fn verify_property_with_context(property: &str, context: &Value) -> Result<VerificationStatus, anyhow::Error> {
+    let framework = create_verification_framework(None);
+    
+    // Find the property by name
+    let property_results = framework.verify_property(property, context)?;
+    
+    // If at least one prover verified the property, consider it verified
+    if property_results.iter().any(|r| r.status == VerificationStatus::Verified) {
+        return Ok(VerificationStatus::Verified);
+    } 
+    
+    // If at least one prover falsified the property, consider it falsified
+    if let Some(result) = property_results.iter().find(|r| matches!(r.status, VerificationStatus::Falsified(_))) {
+        if let VerificationStatus::Falsified(reason) = &result.status {
+            return Ok(VerificationStatus::Falsified(reason.clone()));
+        }
+    }
+    
+    // Otherwise, inconclusive
+    Ok(VerificationStatus::Inconclusive("No definitive result from any prover".to_string()))
 }

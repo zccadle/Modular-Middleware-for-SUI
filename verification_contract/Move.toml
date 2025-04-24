@@ -1,0 +1,13 @@
+[package]
+name = "verification_contract"
+version = "0.0.1"
+# Specify Move 2024 edition (use alpha or beta as available)
+edition = "2024.beta"
+
+[dependencies]
+# Use testnet branch for Sui framework
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "testnet" }
+
+[addresses]
+verification_contract = "0x0"
+sui = "0x2"

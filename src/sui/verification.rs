@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use reqwest;
 use serde_json::{json, Value};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::time::sleep;
@@ -82,8 +82,8 @@ impl VerificationManager {
             transaction: tx.clone(),
             digest: Some(digest.to_string()),
             status: VerificationStatus::Pending,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
+            timestamp: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)?
                 .as_secs(),
             attempts: 0,
             receipt: None,
@@ -100,7 +100,7 @@ impl VerificationManager {
     pub async fn verify_transaction(&self, digest: &str, mut metrics: Option<&mut PerformanceMetrics>) -> Result<VerificationStatus> {
         // Start verification timing if metrics provided
         if let Some(ref mut m) = metrics {
-            m.verification_start_time = Some(std::time::Instant::now());
+            m.verification_start_time = Some(SystemTime::now());
         }
         
         // Get the transaction record
@@ -111,7 +111,7 @@ impl VerificationManager {
                 None => {
                     // End verification timing if metrics provided
                     if let Some(ref mut m) = metrics {
-                        m.verification_end_time = Some(std::time::Instant::now());
+                        m.verification_end_time = Some(SystemTime::now());
                     }
                     return Err(anyhow!("Transaction not registered for verification"));
                 }
@@ -123,7 +123,7 @@ impl VerificationManager {
         let timeout = Duration::from_secs(VERIFICATION_TIMEOUT_SECS);
         let mut attempts = 0;
         
-        // Attempt verification until success, max attempts, or timeout
+        // Poll the status until verified or max attempts reached
         while attempts < MAX_VERIFICATION_ATTEMPTS && start_time.elapsed() < timeout {
             attempts += 1;
             
@@ -153,7 +153,7 @@ impl VerificationManager {
                     
                     // End verification timing if metrics provided
                     if let Some(ref mut m) = metrics {
-                        m.verification_end_time = Some(std::time::Instant::now());
+                        m.verification_end_time = Some(SystemTime::now());
                     }
                     
                     // If verified or explicitly failed, return the status
@@ -175,7 +175,7 @@ impl VerificationManager {
                         
                         // End verification timing if metrics provided
                         if let Some(ref mut m) = metrics {
-                            m.verification_end_time = Some(std::time::Instant::now());
+                            m.verification_end_time = Some(SystemTime::now());
                         }
                         
                         return Ok(status);
@@ -200,7 +200,7 @@ impl VerificationManager {
         
         // End verification timing if metrics provided
         if let Some(ref mut m) = metrics {
-            m.verification_end_time = Some(std::time::Instant::now());
+            m.verification_end_time = Some(SystemTime::now());
         }
         
         Ok(status)
@@ -339,8 +339,8 @@ impl VerificationManager {
     
     /// Clear old verification records
     pub fn clear_old_records(&self, max_age_seconds: u64) -> Result<usize> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs();
         
         let mut verifications = self.verifications.lock().unwrap();

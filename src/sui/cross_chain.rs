@@ -101,7 +101,8 @@ impl SuiAdapter {
         network_manager: Arc<NetworkManager>,
         audit_log: Option<Arc<SecurityAuditLog>>,
     ) -> Self {
-        let chain_id = network_manager.get_active_config().chain_id.clone();
+        let config = network_manager.get_active_config();
+        let chain_id = config.get_chain_id().unwrap_or_else(|| format!("sui-{:?}", config.network_type));
         Self {
             network_manager,
             chain_id,
@@ -130,7 +131,7 @@ impl ChainAdapter for SuiAdapter {
         Ok(tx_json)
     }
     
-    async fn execute_transaction(&self, tx_data: &Value) -> Result<String> {
+    async fn execute_transaction(&self, _tx_data: &Value) -> Result<String> {
         // In a real implementation, this would make an RPC call to SUI
         // For now, we'll just return a mock transaction hash
         
@@ -180,6 +181,8 @@ pub struct EthereumAdapter {
     client: reqwest::Client,
     /// Audit log
     audit_log: Option<Arc<SecurityAuditLog>>,
+    /// Cached chain ID
+    chain_id: String,
 }
 
 impl EthereumAdapter {
@@ -193,7 +196,12 @@ impl EthereumAdapter {
             NetworkType::Testnet => Self::testnet_config(),
             NetworkType::Devnet => Self::devnet_config(),
             NetworkType::Local => Self::local_config(),
+            NetworkType::Custom(_) => Self::testnet_config(), // Use testnet config for custom networks
         };
+        
+        // Pre-compute the chain_id to avoid lifetime issues
+        let chain_id = config.get_chain_id()
+            .unwrap_or_else(|| format!("ethereum-{:?}", network_type));
         
         Self {
             config,
@@ -202,80 +210,66 @@ impl EthereumAdapter {
                 .build()
                 .expect("Failed to create HTTP client"),
             audit_log,
+            chain_id,
         }
     }
     
     /// Create Ethereum mainnet config
     fn mainnet_config() -> ChainConfig {
-        ChainConfig {
-            network_type: NetworkType::Mainnet,
-            chain_id: "ethereum-mainnet".to_string(),
-            rpc_endpoints: vec![
-                "https://mainnet.infura.io/v3/YOUR_INFURA_KEY".to_string(),
-                "https://eth-mainnet.alchemyapi.io/v2/YOUR_ALCHEMY_KEY".to_string(),
-            ],
-            explorer_url: Some("https://etherscan.io/tx".to_string()),
-            min_gas_price: 1,
-            recommended_gas_price: 50,
-            max_gas_price: 500,
-            block_time_ms: 12000, // ~12 seconds
-        }
+        let mut config = ChainConfig::new(NetworkType::Mainnet);
+        config = config.with_param("chain_id", "ethereum-mainnet")
+            .with_param("rpc_endpoints", "https://mainnet.infura.io/v3/YOUR_INFURA_KEY,https://eth-mainnet.alchemyapi.io/v2/YOUR_ALCHEMY_KEY")
+            .with_param("explorer_url", "https://etherscan.io/tx")
+            .with_param("min_gas_price", "1")
+            .with_param("recommended_gas_price", "50")
+            .with_param("max_gas_price", "500")
+            .with_param("block_time_ms", "12000");
+        config
     }
     
     /// Create Ethereum testnet (Sepolia) config
     fn testnet_config() -> ChainConfig {
-        ChainConfig {
-            network_type: NetworkType::Testnet,
-            chain_id: "ethereum-sepolia".to_string(),
-            rpc_endpoints: vec![
-                "https://sepolia.infura.io/v3/YOUR_INFURA_KEY".to_string(),
-                "https://eth-sepolia.g.alchemy.com/v2/YOUR_ALCHEMY_KEY".to_string(),
-            ],
-            explorer_url: Some("https://sepolia.etherscan.io/tx".to_string()),
-            min_gas_price: 1,
-            recommended_gas_price: 20,
-            max_gas_price: 100,
-            block_time_ms: 12000, // ~12 seconds
-        }
+        let mut config = ChainConfig::new(NetworkType::Testnet);
+        config = config.with_param("chain_id", "ethereum-sepolia")
+            .with_param("rpc_endpoints", "https://sepolia.infura.io/v3/YOUR_INFURA_KEY,https://eth-sepolia.g.alchemy.com/v2/YOUR_ALCHEMY_KEY")
+            .with_param("explorer_url", "https://sepolia.etherscan.io/tx")
+            .with_param("min_gas_price", "1")
+            .with_param("recommended_gas_price", "20")
+            .with_param("max_gas_price", "100")
+            .with_param("block_time_ms", "12000");
+        config
     }
     
     /// Create Ethereum devnet config
     fn devnet_config() -> ChainConfig {
-        ChainConfig {
-            network_type: NetworkType::Devnet,
-            chain_id: "ethereum-goerli".to_string(),
-            rpc_endpoints: vec![
-                "https://goerli.infura.io/v3/YOUR_INFURA_KEY".to_string(),
-            ],
-            explorer_url: Some("https://goerli.etherscan.io/tx".to_string()),
-            min_gas_price: 1,
-            recommended_gas_price: 10,
-            max_gas_price: 50,
-            block_time_ms: 12000, // ~12 seconds
-        }
+        let mut config = ChainConfig::new(NetworkType::Devnet);
+        config = config.with_param("chain_id", "ethereum-goerli")
+            .with_param("rpc_endpoints", "https://goerli.infura.io/v3/YOUR_INFURA_KEY")
+            .with_param("explorer_url", "https://goerli.etherscan.io/tx")
+            .with_param("min_gas_price", "1")
+            .with_param("recommended_gas_price", "10")
+            .with_param("max_gas_price", "50")
+            .with_param("block_time_ms", "12000");
+        config
     }
     
     /// Create Ethereum local config
     fn local_config() -> ChainConfig {
-        ChainConfig {
-            network_type: NetworkType::Local,
-            chain_id: "ethereum-local".to_string(),
-            rpc_endpoints: vec![
-                "http://localhost:8545".to_string(),
-            ],
-            explorer_url: None,
-            min_gas_price: 1,
-            recommended_gas_price: 10,
-            max_gas_price: 100,
-            block_time_ms: 12000, // ~12 seconds
-        }
+        let mut config = ChainConfig::new(NetworkType::Local);
+        config = config.with_param("chain_id", "ethereum-local")
+            .with_param("rpc_endpoints", "http://localhost:8545")
+            .with_param("min_gas_price", "1")
+            .with_param("recommended_gas_price", "10")
+            .with_param("max_gas_price", "100")
+            .with_param("block_time_ms", "12000");
+        config
     }
 }
 
 #[async_trait]
 impl ChainAdapter for EthereumAdapter {
     fn chain_id(&self) -> &str {
-        &self.config.chain_id
+        &self.chain_id
     }
     
     async fn format_transaction(&self, tx: &Transaction) -> Result<Value> {
@@ -296,7 +290,7 @@ impl ChainAdapter for EthereumAdapter {
         Ok(eth_tx)
     }
     
-    async fn execute_transaction(&self, tx_data: &Value) -> Result<String> {
+    async fn execute_transaction(&self, _tx_data: &Value) -> Result<String> {
         // In a real implementation, this would send the transaction to Ethereum
         // For now, we'll just return a mock transaction hash
         
@@ -471,7 +465,9 @@ impl CrossChainMapperImpl {
 impl CrossChainMapper for self::CrossChainMapperImpl {
     async fn can_map(&self, tx: &Transaction, target_chain: &str) -> Result<bool> {
         // Get the origin chain ID
-        let origin_chain_id = self.network_manager.get_active_config().chain_id.clone();
+        let config = self.network_manager.get_active_config();
+        let _origin_chain_id = config.get_chain_id()
+            .unwrap_or_else(|| format!("sui-{:?}", config.network_type));
         
         // Get the target chain adapter
         let target_adapter = self.get_adapter(target_chain)?;
@@ -499,22 +495,25 @@ impl CrossChainMapper for self::CrossChainMapperImpl {
             return Err(anyhow!("Cannot map transaction to chain '{}'", target_chain));
         }
         
-        // Get the origin chain ID
-        let origin_chain_id = self.network_manager.get_active_config().chain_id.clone();
-        
         // Get the target chain adapter
         let target_adapter = self.get_adapter(target_chain)?;
         
         // Format the transaction for the target chain
         let target_tx_data = target_adapter.format_transaction(tx).await?;
         
-        // Create a mock origin transaction ID
-        let origin_tx_id = format!("origin_tx_{}", rand::random::<u64>());
+        // Get the original chain ID
+        let config = self.network_manager.get_active_config();
+        let _origin_chain_id = config.get_chain_id()
+            .unwrap_or_else(|| format!("sui-{:?}", config.network_type));
+        
+        // Create a unique ID for the original transaction
+        // In a real system, this would be the transaction hash
+        let origin_tx_id = format!("tx_{:?}_{}", tx.tx_type, chrono::Utc::now().timestamp_millis());
         
         // Create the mapping
         let now = chrono::Utc::now().timestamp() as u64;
         let mapping = CrossChainTransaction {
-            origin_chain_id,
+            origin_chain_id: _origin_chain_id,
             target_chain_id: target_chain.to_string(),
             origin_tx_id: origin_tx_id.clone(),
             target_tx_id: None,
@@ -551,22 +550,22 @@ impl CrossChainMapper for self::CrossChainMapperImpl {
         // Execute the transaction on the target chain
         let target_tx_id = target_adapter.execute_transaction(&mapped_tx.target_tx_data).await?;
         
-        // Update the mapping
+        // Update the mapping with the target transaction ID
         let key = Self::mapping_key(&mapped_tx.origin_chain_id, &mapped_tx.origin_tx_id);
-        let mut mappings = self.mappings.lock().unwrap();
         
-        if let Some(mapping) = mappings.get_mut(&key) {
-            mapping.target_tx_id = Some(target_tx_id.clone());
-            mapping.status = CrossChainStatus::Available;
-            mapping.updated_at = chrono::Utc::now().timestamp() as u64;
+        let mut mappings = self.mappings.lock().unwrap();
+        if let Some(tx) = mappings.get_mut(&key) {
+            tx.target_tx_id = Some(target_tx_id.clone());
+            tx.status = CrossChainStatus::Available;
+            tx.updated_at = chrono::Utc::now().timestamp() as u64;
         }
         
-        // Log the operation
+        // Log the execution
         if let Some(log) = &self.audit_log {
             let _ = log.log_network(
                 "CrossChainMapper",
-                &format!("Executed mapped transaction on chain '{}': {}",
-                    mapped_tx.target_chain_id, target_tx_id),
+                &format!("Executed mapped transaction on chain {}. Target tx ID: {}", 
+                        mapped_tx.target_chain_id, target_tx_id),
                 Some(&mapped_tx.target_chain_id),
                 AuditSeverity::Info
             );
@@ -576,47 +575,45 @@ impl CrossChainMapper for self::CrossChainMapperImpl {
     }
     
     async fn verify_mapped(&self, mapped_tx: &CrossChainTransaction) -> Result<bool> {
-        // Make sure we have a target transaction ID
-        let target_tx_id = mapped_tx.target_tx_id.clone()
-            .ok_or_else(|| anyhow!("No target transaction ID to verify"))?;
+        // Check if the transaction has a target transaction ID
+        if mapped_tx.target_tx_id.is_none() {
+            return Err(anyhow!("Transaction has not been executed on the target chain yet"));
+        }
+        
+        let target_tx_id = mapped_tx.target_tx_id.as_ref().unwrap();
         
         // Get the target chain adapter
         let target_adapter = self.get_adapter(&mapped_tx.target_chain_id)?;
         
         // Get the transaction status from the target chain
-        let status = target_adapter.get_transaction_status(&target_tx_id).await?;
+        let config = self.network_manager.get_active_config();
+        let _origin_chain_id = config.get_chain_id()
+            .unwrap_or_else(|| format!("sui-{:?}", config.network_type));
+        let status = target_adapter.get_transaction_status(target_tx_id).await?;
         
         // Check if the transaction was successful
-        let success = if mapped_tx.target_chain_id.contains("ethereum") {
-            // Ethereum status: 0x1 = success, 0x0 = failure
-            status["status"].as_str().map_or(false, |s| s == "0x1")
-        } else if mapped_tx.target_chain_id.contains("sui") {
-            // SUI status: check for success field
-            status["status"].as_str().map_or(false, |s| s == "success")
+        // The exact check would depend on the chain-specific response format
+        let success = if let Some(status_field) = status.get("status") {
+            if status_field.is_string() {
+                status_field.as_str().unwrap() == "success"
+            } else if status_field.is_boolean() {
+                status_field.as_bool().unwrap()
+            } else {
+                false
+            }
         } else {
-            // Default implementation for other chains
-            status["status"].as_str().map_or(false, |s| s == "success" || s == "confirmed")
+            false
         };
         
-        // Log the verification result
+        // Log the verification
         if let Some(log) = &self.audit_log {
-            if success {
-                let _ = log.log_network(
-                    "CrossChainMapper",
-                    &format!("Verified mapped transaction on chain '{}': {}",
-                        mapped_tx.target_chain_id, target_tx_id),
-                    Some(&mapped_tx.target_chain_id),
-                    AuditSeverity::Info
-                );
-            } else {
-                let _ = log.log_network(
-                    "CrossChainMapper",
-                    &format!("Mapped transaction failed on chain '{}': {}",
-                        mapped_tx.target_chain_id, target_tx_id),
-                    Some(&mapped_tx.target_chain_id),
-                    AuditSeverity::Error
-                );
-            }
+            let _ = log.log_network(
+                "CrossChainMapper",
+                &format!("Verified mapped transaction on chain {}: {}. Success: {}", 
+                        mapped_tx.target_chain_id, target_tx_id, success),
+                Some(&mapped_tx.target_chain_id),
+                if success { AuditSeverity::Info } else { AuditSeverity::Warning }
+            );
         }
         
         Ok(success)
@@ -647,7 +644,9 @@ pub async fn demonstrate_cross_chain_mapping(
         println!("Supported chains: {:?}", chains);
         
         // Choose a target chain (different from origin)
-        let origin_chain = mapper_obj.network_manager.get_active_config().chain_id.clone();
+        let config = mapper_obj.network_manager.get_active_config();
+        let origin_chain = config.get_chain_id()
+            .unwrap_or_else(|| format!("sui-{:?}", config.network_type));
         let target_chain = chains.iter()
             .find(|&chain| chain != &origin_chain)
             .ok_or_else(|| anyhow!("No suitable target chain found"))?;

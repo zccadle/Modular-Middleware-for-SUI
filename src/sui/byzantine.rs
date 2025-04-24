@@ -1,12 +1,12 @@
 use anyhow::{Result, anyhow};
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
+use std::collections::{HashMap};
 use std::sync::{Arc, Mutex};
 use reqwest;
 use serde_json::{json, Value};
-use crate::transaction::types::Transaction;
 use crate::security::audit::{SecurityAuditLog, AuditSeverity, AuditEventType};
 use crate::sui::verification::VerificationStatus;
+use crate::transaction::types::SignatureBytes;
 
 /// Maximum allowed discrepancy between node responses (in milliseconds)
 const MAX_TIME_DISCREPANCY_MS: u64 = 5000;  // 5 seconds
@@ -47,6 +47,7 @@ pub struct NodeResponse {
 }
 
 /// Byzantine fault detector for blockchain nodes
+#[derive(Debug)]
 pub struct ByzantineDetector {
     /// HTTP client for making RPC requests
     client: reqwest::Client,
@@ -188,7 +189,7 @@ impl ByzantineDetector {
         }
         
         // Check for Byzantine behavior
-        let (consensus_reached, consensus_response) = self.check_consensus(&responses, digest)?;
+        let (_consensus_reached, consensus_response) = self.check_consensus(&responses, digest)?;
         
         // Cache the consensus response
         {

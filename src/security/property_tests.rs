@@ -2,12 +2,11 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use rand::Rng;
+use proptest::prelude::*;
 
-use crate::security::verification::{
-    FormalProperty, PropertyType, VerificationStatus, 
-    create_verification_framework
-};
-use crate::security::model::{SecurityProperty, SecurityGuarantee};
+use crate::security::verification::{VerificationStatus};
+use crate::security::verification::create_verification_framework;
+use crate::security::model::{SecurityGuarantee};
 use crate::transaction::types::Transaction;
 
 /// Generate a random transaction for property testing

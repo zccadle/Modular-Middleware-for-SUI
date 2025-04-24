@@ -8,210 +8,163 @@ use std::time::{Duration, Instant};
 use reqwest;
 use crate::security::audit::{SecurityAuditLog, AuditSeverity};
 
+/// Data cached from an oracle source
+#[derive(Clone)]
+pub struct CachedData {
+    pub value: Value,
+    pub timestamp: Instant,
+}
+
 /// Oracle data source status
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OracleSourceStatus {
-    /// Source is operational
     Operational,
-    /// Source is degraded but usable
     Degraded(String),
-    /// Source is not operational
     Failed(String),
 }
 
 /// Data validation rule type
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ValidationRuleType {
-    /// Validate numeric range
     NumericRange,
-    /// Validate string pattern
     StringPattern,
-    /// Validate boolean value
     BooleanValue,
-    /// Validate timestamp range
     TimestampRange,
-    /// Validate enumeration
     Enumeration,
-    /// Custom validation rule
     Custom,
 }
 
 /// Data validation rule
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationRule {
-    /// Rule name
     pub name: String,
-    /// Rule type
     pub rule_type: ValidationRuleType,
-    /// Rule parameters
     pub parameters: Value,
-    /// Error message if validation fails
     pub error_message: String,
 }
 
 /// Result of data validation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationResult {
-    /// Whether validation passed
     pub passed: bool,
-    /// Rule that was applied
     pub rule_name: String,
-    /// Error message if validation failed
     pub error_message: Option<String>,
-    /// Data that was validated
     pub data_field: String,
-    /// Value that was validated
     pub value: Value,
 }
 
 /// Data source configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleSourceConfig {
-    /// Source name
     pub name: String,
-    /// Source URL
     pub url: String,
-    /// Source type (REST, GraphQL, WebSocket, etc.)
-    pub source_type: String,
-    /// Authentication header
+    pub source_type: String, // "REST", "GraphQL", "WebSocket"
     pub auth_header: Option<String>,
-    /// Default request parameters
     pub default_params: Option<Value>,
-    /// Validation rules
     pub validation_rules: Vec<ValidationRule>,
-    /// Weight in consensus voting (1-100)
-    pub weight: u8,
-    /// Timeout in milliseconds
+    pub weight: u8, // 1-100
     pub timeout_ms: u64,
-    /// Rate limit (requests per minute)
-    pub rate_limit: Option<u32>,
-    /// Whether source requires authentication
+    pub rate_limit: Option<u32>, // requests per minute
     pub requires_auth: bool,
+    pub path: Vec<String>, // Path to extract data from response (e.g., ["data", "temperature"])
+    pub required_fields: Vec<String>, // Fields that must be present in the extracted data
 }
 
-/// Oracle data source trait - non-async methods only
-pub trait OracleDataSource: Send + Sync {
-    /// Get the name of the data source
-    fn name(&self) -> &str;
-    
-    /// Get the configuration of the data source
-    fn config(&self) -> &OracleSourceConfig;
-    
-    /// Validate data against rules
-    fn validate_data(&self, data: &Value) -> Vec<ValidationResult>;
-    
-    /// Get the current status of the data source
-    fn status(&self) -> OracleSourceStatus;
-    
-    /// Update the configuration of the data source
-    fn update_config(&mut self, config: OracleSourceConfig);
-}
-
-/// Async extension trait for OracleDataSource
+/// Generic Oracle Source trait
 #[async_trait]
-pub trait AsyncOracleDataSource: OracleDataSource {
-    /// Fetch data from the source
-    async fn fetch_data(&self, params: &Value) -> Result<Value>;
+pub trait OracleSource: Send + Sync {
+    fn name(&self) -> &str;
+    fn config(&self) -> &OracleSourceConfig;
+    async fn fetch(&self, params: &Value) -> Result<Value>;
+    fn validate(&self, data: &Value) -> Vec<ValidationResult>;
+    fn status(&self) -> OracleSourceStatus;
+    async fn run_background_updates(&self, update_interval: Duration);
 }
 
-/// REST API data source
-pub struct RestApiSource {
-    /// HTTP client
+/// REST API data source implementation
+pub struct RestApiOracleSource {
     client: reqwest::Client,
-    /// Configuration
     config: OracleSourceConfig,
-    /// Current status
-    status: OracleSourceStatus,
-    /// Last request timestamp
-    last_request: Option<Instant>,
-    /// Request count for rate limiting
+    status: Arc<Mutex<OracleSourceStatus>>,
+    last_request: Arc<Mutex<Option<Instant>>>,
     request_count: Arc<Mutex<u32>>,
-    /// Audit log
     audit_log: Option<Arc<SecurityAuditLog>>,
+    cache: Arc<Mutex<HashMap<String, CachedData>>>,
+    cache_duration: Duration,
 }
 
-impl RestApiSource {
-    /// Create a new REST API data source
-    pub fn new(config: OracleSourceConfig, audit_log: Option<Arc<SecurityAuditLog>>) -> Result<Self> {
+impl RestApiOracleSource {
+    pub fn new(
+        config: OracleSourceConfig,
+        audit_log: Option<Arc<SecurityAuditLog>>,
+        cache: Arc<Mutex<HashMap<String, CachedData>>>,
+        cache_duration: Duration,
+    ) -> Result<Self> {
         if config.source_type != "REST" {
-            return Err(anyhow!("Invalid source type for RestApiSource: {}", config.source_type));
+            return Err(anyhow!("Invalid source type for RestApiSource"));
         }
-        
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .build()
-            .map_err(|e| anyhow!("Failed to create HTTP client: {}", e))?;
-        
+            .map_err(|e| anyhow!("Failed to build HTTP client: {}", e))?;
+
         Ok(Self {
             client,
             config,
-            status: OracleSourceStatus::Operational,
-            last_request: None,
+            status: Arc::new(Mutex::new(OracleSourceStatus::Operational)),
+            last_request: Arc::new(Mutex::new(None)),
             request_count: Arc::new(Mutex::new(0)),
             audit_log,
+            cache,
+            cache_duration,
         })
     }
-    
-    /// Check if rate limit is reached
+
     fn check_rate_limit(&self) -> bool {
         if let Some(rate_limit) = self.config.rate_limit {
             let mut count = self.request_count.lock().unwrap();
-            
-            if let Some(last_req) = self.last_request {
-                // Reset counter if a minute has passed
+            let mut last_req_opt = self.last_request.lock().unwrap();
+
+            if let Some(last_req) = *last_req_opt {
                 if last_req.elapsed().as_secs() > 60 {
-                    *count = 0;
+                    *count = 1;
+                    *last_req_opt = Some(Instant::now());
                     return false;
                 }
-                
-                // Check if rate limit is reached
                 if *count >= rate_limit {
                     return true;
                 }
+                *count += 1;
+            } else {
+                *count = 1;
+                *last_req_opt = Some(Instant::now());
             }
-            
-            // Increment counter
-            *count += 1;
         }
-        
         false
     }
-    
-    /// Validate a numeric value against a range rule
+
     fn validate_numeric_range(&self, value: &Value, params: &Value) -> bool {
         if let Some(num) = value.as_f64() {
             let min = params.get("min").and_then(Value::as_f64);
             let max = params.get("max").and_then(Value::as_f64);
-            
             match (min, max) {
-                (Some(min_val), Some(max_val)) => {
-                    num >= min_val && num <= max_val
-                },
-                (Some(min_val), None) => {
-                    num >= min_val
-                },
-                (None, Some(max_val)) => {
-                    num <= max_val
-                },
+                (Some(min_v), Some(max_v)) => num >= min_v && num <= max_v,
+                (Some(min_v), None) => num >= min_v,
+                (None, Some(max_v)) => num <= max_v,
                 (None, None) => true,
             }
         } else {
             false
         }
     }
-    
-    /// Validate a string value against a pattern rule
+
     fn validate_string_pattern(&self, value: &Value, params: &Value) -> bool {
         if let Some(str_val) = value.as_str() {
             if let Some(pattern) = params.get("pattern").and_then(Value::as_str) {
-                // For simplicity, we just check if pattern is a substring
-                // In a real implementation, this would use regex
+                // Basic substring check; use regex crate for real patterns
                 str_val.contains(pattern)
-            } else if let Some(allowed_values) = params.get("allowed").and_then(Value::as_array) {
-                // Check if value is in allowed list
-                allowed_values.iter()
-                    .filter_map(Value::as_str)
-                    .any(|allowed| allowed == str_val)
+            } else if let Some(allowed) = params.get("allowed").and_then(Value::as_array) {
+                allowed.iter().any(|v| v.as_str() == Some(str_val))
             } else {
                 true
             }
@@ -219,891 +172,838 @@ impl RestApiSource {
             false
         }
     }
-    
-    /// Apply a validation rule to data
+
     fn apply_rule(&self, rule: &ValidationRule, data: &Value) -> Vec<ValidationResult> {
         let mut results = Vec::new();
-        
-        // For simplicity, we assume the rule applies to all fields
-        // In a real implementation, we would specify exact fields
-        
-        match rule.rule_type {
-            ValidationRuleType::NumericRange => {
-                if let Some(obj) = data.as_object() {
-                    for (field, value) in obj {
-                        if value.is_number() {
-                            let passed = self.validate_numeric_range(value, &rule.parameters);
-                            
-                            results.push(ValidationResult {
-                                passed,
-                                rule_name: rule.name.clone(),
-                                error_message: if passed { None } else { Some(rule.error_message.clone()) },
-                                data_field: field.clone(),
-                                value: value.clone(),
-                            });
-                        }
-                    }
+        // Simplified: apply rule to all fields. Enhance to target specific fields.
+        if let Some(obj) = data.as_object() {
+            for (field, value) in obj {
+                let passed = match rule.rule_type {
+                    ValidationRuleType::NumericRange => self.validate_numeric_range(value, &rule.parameters),
+                    ValidationRuleType::StringPattern => self.validate_string_pattern(value, &rule.parameters),
+                    _ => true, // Assume pass for unimplemented rules
+                };
+
+                if !passed || value.is_number() || value.is_string() { // Only log results for relevant types or failures
+                    results.push(ValidationResult {
+                        passed,
+                        rule_name: rule.name.clone(),
+                        error_message: if passed { None } else { Some(rule.error_message.clone()) },
+                        data_field: field.clone(),
+                        value: value.clone(),
+                    });
                 }
-            },
-            ValidationRuleType::StringPattern => {
-                if let Some(obj) = data.as_object() {
-                    for (field, value) in obj {
-                        if value.is_string() {
-                            let passed = self.validate_string_pattern(value, &rule.parameters);
-                            
-                            results.push(ValidationResult {
-                                passed,
-                                rule_name: rule.name.clone(),
-                                error_message: if passed { None } else { Some(rule.error_message.clone()) },
-                                data_field: field.clone(),
-                                value: value.clone(),
-                            });
-                        }
-                    }
-                }
-            },
-            // Other validation types would be implemented similarly
-            _ => {}
+            }
         }
-        
         results
+    }
+
+    /// Extracts a value from a JSON object using a path.
+    fn extract_value<'a>(&self, data: &'a Value, path: &[String]) -> Option<&'a Value> {
+        let mut current = data;
+        for key in path {
+            if let Some(obj) = current.as_object() {
+                current = obj.get(key)?;
+            } else if let Some(arr) = current.as_array() {
+                if let Ok(index) = key.parse::<usize>() {
+                    current = arr.get(index)?;
+                } else {
+                    return None; // Path element is not a valid index for an array
+                }
+            } else {
+                return None; // Path element encountered but current value is not an object or array
+            }
+        }
+        Some(current)
+    }
+
+    /// Checks if all required fields are present in the extracted data.
+    fn check_required_fields(&self, data: &Value) -> bool {
+        if self.config.required_fields.is_empty() {
+            return true;
+        }
+        if let Some(obj) = data.as_object() {
+            self.config.required_fields.iter().all(|field| obj.contains_key(field))
+        } else {
+            false // Required fields check only makes sense for objects
+        }
     }
 }
 
 #[async_trait]
-impl OracleDataSource for RestApiSource {
+impl OracleSource for RestApiOracleSource {
     fn name(&self) -> &str {
         &self.config.name
     }
-    
+
     fn config(&self) -> &OracleSourceConfig {
         &self.config
     }
-    
-    fn validate_data(&self, data: &Value) -> Vec<ValidationResult> {
-        let mut results = Vec::new();
-        
-        for rule in &self.config.validation_rules {
-            let rule_results = self.apply_rule(rule, data);
-            results.extend(rule_results);
-        }
-        
-        // Log validation failures
-        if let Some(log) = &self.audit_log {
-            let failures: Vec<&ValidationResult> = results.iter()
-                .filter(|r| !r.passed)
-                .collect();
-            
-            if !failures.is_empty() {
-                let _ = log.log_external_api(
-                    "RestApiSource",
-                    &format!("Data validation failed for {} with {} rule violations",
-                        self.config.name, failures.len()),
-                    AuditSeverity::Warning
-                );
-            }
-        }
-        
-        results
-    }
-    
-    fn status(&self) -> OracleSourceStatus {
-        self.status.clone()
-    }
-    
-    fn update_config(&mut self, config: OracleSourceConfig) {
-        // Validate the new configuration
-        if config.source_type != "REST" {
-            if let Some(log) = &self.audit_log {
-                let _ = log.log_external_api(
-                    "RestApiSource",
-                    &format!("Invalid source type for RestApiSource: {}", config.source_type),
-                    AuditSeverity::Error
-                );
-            }
-            return;
-        }
-        
-        // Update the configuration
-        self.config = config;
-        
-        // Recreate the client with new timeout
-        match reqwest::Client::builder()
-            .timeout(Duration::from_millis(self.config.timeout_ms))
-            .build() {
-            Ok(client) => {
-                self.client = client;
-                
-                if let Some(log) = &self.audit_log {
-                    let _ = log.log_external_api(
-                        "RestApiSource",
-                        &format!("Configuration updated for {}", self.config.name),
-                        AuditSeverity::Info
-                    );
-                }
-            },
-            Err(e) => {
-                if let Some(log) = &self.audit_log {
-                    let _ = log.log_external_api(
-                        "RestApiSource",
-                        &format!("Failed to create HTTP client: {}", e),
-                        AuditSeverity::Error
-                    );
-                }
-            }
-        }
-    }
-}
 
-#[async_trait]
-impl AsyncOracleDataSource for RestApiSource {
-    async fn fetch_data(&self, params: &Value) -> Result<Value> {
-        // Check rate limit
-        if self.check_rate_limit() {
-            return Err(anyhow!("Rate limit reached for {}", self.config.name));
-        }
-        
-        // Merge default params with provided params
-        let request_params = if let Some(default_params) = &self.config.default_params {
-            if let (Some(default_obj), Some(params_obj)) = (default_params.as_object(), params.as_object()) {
-                let mut merged = default_obj.clone();
-                
-                for (key, value) in params_obj {
-                    merged.insert(key.clone(), value.clone());
-                }
-                
-                Value::Object(merged)
-            } else {
-                params.clone()
-            }
-        } else {
-            params.clone()
-        };
-        
-        // Prepare the request
-        let mut request = self.client.get(&self.config.url);
-        
-        // Add authentication if required
-        if let Some(auth) = &self.config.auth_header {
-            request = request.header("Authorization", auth);
-        }
-        
-        // Add parameters if any
-        if let Some(obj) = request_params.as_object() {
-            let mut string_values = Vec::new(); // Store string values to extend their lifetime
-            let mut key_value_pairs = Vec::new();
-            
-            // First collect all keys and values
-            for (key, value) in obj {
-                if let Some(str_val) = value.as_str() {
-                    key_value_pairs.push((key.as_str(), str_val));
-                } else {
-                    // Convert value to string and store it
-                    string_values.push((key.as_str(), value.to_string()));
-                }
-            }
-            
-            // Build query params using direct string values and references to stored strings
-            let mut query_params = Vec::new();
-            for (k, v) in key_value_pairs {
-                query_params.push((k, v));
-            }
-            
-            for (k, ref v) in &string_values {
-                query_params.push((k, v.as_str()));
-            }
-            
-            // Build the request with query parameters
-            for (k, v) in query_params {
-                request = request.query(&[(k, v)]);
-            }
-        }
-        
-        // Send the request
-        let response = request.send().await
-            .map_err(|e| {
-                // Update status on error
-                let error_msg = format!("Request failed: {}", e);
-                
-                if let Some(log) = &self.audit_log {
-                    let _ = log.log_external_api(
-                        "RestApiSource",
-                        &error_msg,
-                        AuditSeverity::Error
-                    );
-                }
-                
-                anyhow!(error_msg)
-            })?;
-        
-        // Check if response is successful
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_msg = format!("API returned error status: {}", status);
-            
-            if let Some(log) = &self.audit_log {
-                let _ = log.log_external_api(
-                    "RestApiSource",
-                    &error_msg,
-                    AuditSeverity::Error
-                );
-            }
-            
-            return Err(anyhow!(error_msg));
-        }
-        
-        // Parse response as JSON
-        let data = response.json::<Value>().await
-            .map_err(|e| {
-                let error_msg = format!("Failed to parse response as JSON: {}", e);
-                
-                if let Some(log) = &self.audit_log {
-                    let _ = log.log_external_api(
-                        "RestApiSource",
-                        &error_msg,
-                        AuditSeverity::Error
-                    );
-                }
-                
-                anyhow!(error_msg)
-            })?;
-        
-        // Log successful fetch
-        if let Some(log) = &self.audit_log {
-            let _ = log.log_external_api(
-                "RestApiSource",
-                &format!("Successfully fetched data from {}", self.config.name),
-                AuditSeverity::Info
-            );
-        }
-        
-        Ok(data)
-    }
-}
+    async fn fetch(&self, params: &Value) -> Result<Value> {
+        let cache_key = format!("{}:{}", self.config.name, serde_json::to_string(params)?);
 
-// Wrapper struct to allow storing a reference to an AsyncOracleDataSource as an OracleDataSource
-struct RestApiSourceWrapper<'a>(&'a dyn AsyncOracleDataSource);
-
-impl<'a> OracleDataSource for RestApiSourceWrapper<'a> {
-    fn name(&self) -> &str {
-        self.0.name()
-    }
-    
-    fn config(&self) -> &OracleSourceConfig {
-        self.0.config()
-    }
-    
-    fn validate_data(&self, data: &Value) -> Vec<ValidationResult> {
-        self.0.validate_data(data)
-    }
-    
-    fn status(&self) -> OracleSourceStatus {
-        self.0.status()
-    }
-    
-    fn update_config(&mut self, _config: OracleSourceConfig) {
-        // Cannot update through wrapper
-    }
-}
-
-// Wrapper struct that owns an AsyncOracleDataSource
-struct OwnedSourceWrapper(Box<dyn AsyncOracleDataSource + Send + Sync>);
-
-impl OracleDataSource for OwnedSourceWrapper {
-    fn name(&self) -> &str {
-        self.0.name()
-    }
-    
-    fn config(&self) -> &OracleSourceConfig {
-        self.0.config()
-    }
-    
-    fn validate_data(&self, data: &Value) -> Vec<ValidationResult> {
-        self.0.validate_data(data)
-    }
-    
-    fn status(&self) -> OracleSourceStatus {
-        self.0.status()
-    }
-    
-    fn update_config(&mut self, _config: OracleSourceConfig) {
-        // Cannot update through wrapper
-    }
-}
-
-// Implement AsyncOracleDataSource for OwnedSourceWrapper
-#[async_trait]
-impl AsyncOracleDataSource for OwnedSourceWrapper {
-    async fn fetch_data(&self, params: &Value) -> Result<Value> {
-        self.0.fetch_data(params).await
-    }
-}
-
-// Clone implementation for AsyncOracleDataSource
-impl Clone for Box<dyn AsyncOracleDataSource + Send + Sync> {
-    fn clone(&self) -> Self {
-        // This is a hack for our specific case
-        // In a real implementation, we would use a different approach
-        // Create a new RestApiSource with default configuration
-        let config = OracleSourceConfig {
-            name: "cloned_source".to_string(),
-            url: "https://example.com".to_string(),
-            source_type: "REST".to_string(),
-            weight: 100,
-            timeout_ms: 5000,
-            rate_limit: Some(60),
-            requires_auth: false,
-            auth_header: None,
-            default_params: None,
-            validation_rules: Vec::new(),
-        };
-        
-        let new_source = RestApiSource::new(config, None).unwrap();
-        Box::new(new_source)
-    }
-}
-
-/// Oracle manager for coordinating multiple data sources
-pub struct OracleManager {
-    /// Data sources
-    sources: HashMap<String, Box<dyn OracleDataSource + Send + Sync>>,
-    /// Async data sources
-    async_sources: HashMap<String, Box<dyn AsyncOracleDataSource + Send + Sync>>,
-    /// Audit log
-    audit_log: Option<Arc<SecurityAuditLog>>,
-    /// Consensus threshold (percentage)
-    consensus_threshold: u8,
-    /// Whether validation is required
-    validation_required: bool,
-    /// Cache of recent responses
-    cache: Arc<Mutex<HashMap<String, (Value, Instant)>>>,
-    /// Cache TTL in seconds
-    cache_ttl: u64,
-}
-
-impl OracleManager {
-    /// Create a new oracle manager
-    pub fn new(
-        audit_log: Option<Arc<SecurityAuditLog>>,
-        consensus_threshold: Option<u8>,
-        validation_required: Option<bool>,
-        cache_ttl: Option<u64>
-    ) -> Self {
-        Self {
-            sources: HashMap::new(),
-            async_sources: HashMap::new(),
-            audit_log,
-            consensus_threshold: consensus_threshold.unwrap_or(51), // Default: simple majority
-            validation_required: validation_required.unwrap_or(true), // Default: validation required
-            cache: Arc::new(Mutex::new(HashMap::new())),
-            cache_ttl: cache_ttl.unwrap_or(300), // Default: 5 minutes
-        }
-    }
-    
-    /// Add a data source
-    pub fn add_source(&mut self, source: Box<dyn OracleDataSource + Send + Sync>) -> Result<()> {
-        let name = source.name().to_string();
-        
-        if self.sources.contains_key(&name) {
-            return Err(anyhow!("Source with name '{}' already exists", name));
-        }
-        
-        self.sources.insert(name.clone(), source);
-        
-        if let Some(log) = &self.audit_log {
-            let _ = log.log_external_api(
-                "OracleManager",
-                &format!("Added data source '{}'", name),
-                AuditSeverity::Info
-            );
-        }
-        
-        Ok(())
-    }
-    
-    /// Add an async data source
-    pub fn add_async_source(&mut self, source: Box<dyn AsyncOracleDataSource + Send + Sync>) -> Result<()> {
-        let name = source.name().to_string();
-        
-        if self.async_sources.contains_key(&name) {
-            return Err(anyhow!("Async source with name '{}' already exists", name));
-        }
-        
-        // Create a wrapper that owns the source
-        let wrapper = Box::new(OwnedSourceWrapper(source.clone()));
-        
-        // Add to regular sources for non-async operations
-        self.sources.insert(name.clone(), wrapper);
-        
-        // Add to async sources
-        self.async_sources.insert(name.clone(), source);
-        
-        if let Some(log) = &self.audit_log {
-            let _ = log.log_external_api(
-                "OracleManager",
-                &format!("Added async data source '{}'", name),
-                AuditSeverity::Info
-            );
-        }
-        
-        Ok(())
-    }
-    
-    /// Remove a data source
-    pub fn remove_source(&mut self, name: &str) -> Result<()> {
-        if !self.sources.contains_key(name) {
-            return Err(anyhow!("Source with name '{}' does not exist", name));
-        }
-        
-        self.sources.remove(name);
-        
-        if let Some(log) = &self.audit_log {
-            let _ = log.log_external_api(
-                "OracleManager",
-                &format!("Removed data source '{}'", name),
-                AuditSeverity::Info
-            );
-        }
-        
-        Ok(())
-    }
-    
-    /// Get a data source
-    pub fn get_source(&self, name: &str) -> Option<&Box<dyn OracleDataSource + Send + Sync>> {
-        self.sources.get(name)
-    }
-    
-    /// Get all data sources
-    pub fn get_sources(&self) -> Vec<&Box<dyn OracleDataSource + Send + Sync>> {
-        self.sources.values().collect()
-    }
-    
-    /// Get an async data source
-    pub fn get_async_source(&self, name: &str) -> Option<&Box<dyn AsyncOracleDataSource + Send + Sync>> {
-        self.async_sources.get(name)
-    }
-    
-    /// Get all async data sources
-    pub fn get_async_sources(&self) -> Vec<&Box<dyn AsyncOracleDataSource + Send + Sync>> {
-        self.async_sources.values().collect()
-    }
-    
-    /// Set consensus threshold
-    pub fn set_consensus_threshold(&mut self, threshold: u8) -> Result<()> {
-        if threshold < 1 || threshold > 100 {
-            return Err(anyhow!("Consensus threshold must be between 1 and 100"));
-        }
-        
-        self.consensus_threshold = threshold;
-        
-        if let Some(log) = &self.audit_log {
-            let _ = log.log_external_api(
-                "OracleManager",
-                &format!("Set consensus threshold to {}%", threshold),
-                AuditSeverity::Info
-            );
-        }
-        
-        Ok(())
-    }
-    
-    /// Set validation required
-    pub fn set_validation_required(&mut self, required: bool) {
-        self.validation_required = required;
-        
-        if let Some(log) = &self.audit_log {
-            let _ = log.log_external_api(
-                "OracleManager",
-                &format!("Set validation required to {}", required),
-                AuditSeverity::Info
-            );
-        }
-    }
-    
-    /// Get data from all sources and reach consensus
-    pub async fn get_consensus_data(&self, query_id: &str, params: &Value) -> Result<Value> {
         // Check cache first
         {
             let cache = self.cache.lock().unwrap();
-            if let Some((data, timestamp)) = cache.get(query_id) {
-                if timestamp.elapsed().as_secs() < self.cache_ttl {
-                    return Ok(data.clone());
-                }
+            if let Some(cached_data) = cache.get(&cache_key) {
+                 if cached_data.timestamp.elapsed() < self.cache_duration {
+                     return Ok(cached_data.value.clone());
+                 }
             }
         }
-        
-        // Get operational async sources
-        let operational_sources: Vec<&Box<dyn AsyncOracleDataSource + Send + Sync>> = self.async_sources.values()
-            .filter(|source| {
-                match source.status() {
-                    OracleSourceStatus::Operational => true,
-                    OracleSourceStatus::Degraded(_) => true, // Include degraded sources
-                    OracleSourceStatus::Failed(_) => false,
-                }
-            })
-            .collect();
-        
-        if operational_sources.is_empty() {
-            return Err(anyhow!("No operational data sources available"));
+
+        if self.check_rate_limit() {
+            *self.status.lock().unwrap() = OracleSourceStatus::Degraded("Rate limit reached".to_string());
+            return Err(anyhow!("Rate limit reached for {}", self.config.name));
         }
-        
-        // Collect responses from all sources
-        let mut responses = Vec::new();
-        
-        for source in &operational_sources {
-            match source.fetch_data(params).await {
-                Ok(data) => {
-                    // Validate data if required
-                    let validation_passed = if self.validation_required {
-                        let validation_results = source.validate_data(&data);
-                        let failures = validation_results.iter().filter(|r| !r.passed).count();
-                        
-                        failures == 0
-                    } else {
-                        true
-                    };
-                    
-                    if validation_passed {
-                        let weight = source.config().weight as usize;
-                        responses.push((data, weight));
-                    } else {
-                        if let Some(log) = &self.audit_log {
-                            let _ = log.log_external_api(
-                                "OracleManager",
-                                &format!("Data from source '{}' failed validation", source.name()),
-                                AuditSeverity::Warning
-                            );
-                        }
+
+        let merged_params = self.config.default_params.as_ref()
+            .and_then(Value::as_object)
+            .map(|default| {
+                params.as_object().map_or_else(
+                    || Value::Object(default.clone()),
+                    |p| {
+                        let mut merged = default.clone();
+                        merged.extend(p.iter().map(|(k, v)| (k.clone(), v.clone())));
+                        Value::Object(merged)
                     }
-                },
+                )
+            })
+            .unwrap_or_else(|| params.clone());
+
+        let mut request = self.client.get(&self.config.url);
+        if let Some(auth) = &self.config.auth_header {
+            request = request.header("Authorization", auth);
+        }
+        if let Some(obj) = merged_params.as_object() {
+            request = request.query(obj);
+        }
+
+        let response_result = request.send().await;
+        *self.last_request.lock().unwrap() = Some(Instant::now());
+
+        let response = match response_result {
+            Ok(resp) => resp,
+            Err(e) => {
+                *self.status.lock().unwrap() = OracleSourceStatus::Failed(format!("Request failed: {}", e));
+                if let Some(log) = &self.audit_log {
+                    let _ = log.log_external_api("RestApiOracleSource", &format!("{} request failed: {}", self.config.name, e), AuditSeverity::Error);
+                }
+                return Err(anyhow!("Request failed: {}", e));
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            *self.status.lock().unwrap() = OracleSourceStatus::Failed(format!("API Error: {}", status));
+            if let Some(log) = &self.audit_log {
+                let _ = log.log_external_api("RestApiOracleSource", &format!("{} returned error: {}", self.config.name, status), AuditSeverity::Error);
+            }
+            return Err(anyhow!("API returned error status: {}", status));
+        }
+
+        let data = match response.json::<Value>().await {
+            Ok(d) => d,
+            Err(e) => {
+                *self.status.lock().unwrap() = OracleSourceStatus::Failed(format!("JSON parse failed: {}", e));
+                if let Some(log) = &self.audit_log {
+                    let _ = log.log_external_api("RestApiOracleSource", &format!("{} JSON parse failed: {}", self.config.name, e), AuditSeverity::Error);
+                }
+                return Err(anyhow!("Failed to parse JSON: {}", e));
+            }
+        };
+
+        // Extract the relevant part of the data using the path
+        let extracted_data = self.extract_value(&data, &self.config.path)
+                                 .ok_or_else(|| anyhow!("Failed to extract data using path for {}", self.config.name))?;
+
+        // Check for required fields in the extracted data
+        if !self.check_required_fields(extracted_data) {
+             *self.status.lock().unwrap() = OracleSourceStatus::Failed("Missing required fields".to_string());
+             if let Some(log) = &self.audit_log {
+                 let _ = log.log_external_api("RestApiOracleSource", &format!("{} missing required fields", self.config.name), AuditSeverity::Error);
+             }
+             return Err(anyhow!("Data from {} missing required fields", self.config.name));
+         }
+
+        *self.status.lock().unwrap() = OracleSourceStatus::Operational;
+        if let Some(log) = &self.audit_log {
+            let _ = log.log_external_api("RestApiOracleSource", &format!("Successfully fetched from {}", self.config.name), AuditSeverity::Info);
+        }
+
+        // Update cache
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.insert(cache_key, CachedData {
+                value: extracted_data.clone(),
+                timestamp: Instant::now()
+            });
+        }
+
+        Ok(extracted_data.clone())
+    }
+
+    fn validate(&self, data: &Value) -> Vec<ValidationResult> {
+        let mut results = Vec::new();
+        for rule in &self.config.validation_rules {
+            results.extend(self.apply_rule(rule, data));
+        }
+
+        if let Some(log) = &self.audit_log {
+            let failures = results.iter().filter(|r| !r.passed).count();
+            if failures > 0 {
+                let _ = log.log_external_api("RestApiOracleSource", &format!("{} validation failures: {}", self.config.name, failures), AuditSeverity::Warning);
+            }
+        }
+        results
+    }
+
+    fn status(&self) -> OracleSourceStatus {
+        self.status.lock().unwrap().clone()
+    }
+
+    async fn run_background_updates(&self, update_interval: Duration) {
+        if update_interval.is_zero() {
+            return;
+        }
+        let params = self.config.default_params.clone().unwrap_or(json!({}));
+        loop {
+            tokio::time::sleep(update_interval).await;
+            // Use a unique key for background updates to avoid conflicting with specific requests
+            let background_key = format!("{}:background_update", self.config.name);
+            let params_for_update = params.clone(); // Clone params for the async block
+
+            // Construct a query_id similar to how get_consensus_data might do it
+            // This ensures the cache key matches potential direct queries.
+            let query_id = match serde_json::to_string(&params_for_update) {
+                Ok(s) => format!("{}:{}", self.config.name, s),
+                Err(_) => background_key, // Fallback if params serialization fails
+            };
+
+            match self.fetch(&params_for_update).await {
+                Ok(data) => {
+                    // Cache the fetched data
+                    let mut cache = self.cache.lock().unwrap();
+                     cache.insert(query_id, CachedData {
+                         value: data,
+                         timestamp: Instant::now()
+                     });
+                    if let Some(log) = &self.audit_log {
+                        let _ = log.log_external_api("RestApiOracleSource", &format!("Background update success for {}", self.config.name), AuditSeverity::Info);
+                    }
+                }
                 Err(e) => {
                     if let Some(log) = &self.audit_log {
-                        let _ = log.log_external_api(
-                            "OracleManager",
-                            &format!("Failed to fetch data from source '{}': {}", source.name(), e),
-                            AuditSeverity::Warning
-                        );
+                        let _ = log.log_external_api("RestApiOracleSource", &format!("Background update failed for {}: {}", self.config.name, e), AuditSeverity::Warning);
                     }
                 }
             }
-        }
-        
-        if responses.is_empty() {
-            return Err(anyhow!("No valid responses received from any data source"));
-        }
-        
-        // Reach consensus - for simplicity, we currently support scalar values and string values
-        
-        // If we have only one response, just return it
-        if responses.len() == 1 {
-            return Ok(responses[0].0.clone());
-        }
-        
-        // Check if we're dealing with scalar values
-        let is_scalar = responses.iter().all(|(data, _)| {
-            data.is_number() || data.is_string() || data.is_boolean()
-        });
-        
-        if is_scalar {
-            return self.scalar_consensus(&responses);
-        }
-        
-        // For objects, we reach consensus field by field
-        if responses.iter().all(|(data, _)| data.is_object()) {
-            return self.object_consensus(&responses);
-        }
-        
-        // If we can't reach consensus, return the response with the highest weight
-        let highest_weight = responses.iter().max_by_key(|(_, weight)| weight);
-        
-        if let Some((data, _)) = highest_weight {
-            // Cache the result
-            let mut cache = self.cache.lock().unwrap();
-            cache.insert(query_id.to_string(), (data.clone(), Instant::now()));
-            
-            return Ok(data.clone());
-        }
-        
-        Err(anyhow!("Failed to reach consensus"))
-    }
-    
-    /// Reach consensus for scalar values
-    fn scalar_consensus(&self, responses: &[(Value, usize)]) -> Result<Value> {
-        // Group identical values
-        let mut value_groups: HashMap<String, usize> = HashMap::new();
-        let mut weight_groups: HashMap<String, usize> = HashMap::new();
-        
-        let total_weight: usize = responses.iter().map(|(_, weight)| weight).sum();
-        let threshold_weight = (total_weight as f64 * (self.consensus_threshold as f64 / 100.0)).ceil() as usize;
-        
-        for (value, weight) in responses {
-            let key = value.to_string();
-            *value_groups.entry(key.clone()).or_insert(0) += 1;
-            *weight_groups.entry(key).or_insert(0) += *weight;
-        }
-        
-        // Find the value with the highest weight
-        let mut highest_weight = 0;
-        let mut consensus_key = None;
-        
-        for (key, weight) in &weight_groups {
-            if *weight > highest_weight {
-                highest_weight = *weight;
-                consensus_key = Some(key);
-            }
-        }
-        
-        // Check if consensus is reached
-        if highest_weight >= threshold_weight {
-            if let Some(key) = consensus_key {
-                for (value, _) in responses {
-                    if value.to_string() == *key {
-                        return Ok(value.clone());
-                    }
-                }
-            }
-        }
-        
-        // If no consensus, return the most frequent value
-        let consensus_key = value_groups.iter()
-            .max_by_key(|(_, count)| *count)
-            .map(|(key, _)| key);
-        
-        if let Some(key) = consensus_key {
-            for (value, _) in responses {
-                if value.to_string() == *key {
-                    return Ok(value.clone());
-                }
-            }
-        }
-        
-        // If all else fails, return the first value
-        Ok(responses[0].0.clone())
-    }
-    
-    /// Reach consensus for object values (field by field)
-    fn object_consensus(&self, responses: &[(Value, usize)]) -> Result<Value> {
-        let mut result = serde_json::Map::new();
-        
-        // Collect all field names
-        let mut all_fields = std::collections::HashSet::new();
-        
-        for (data, _) in responses {
-            if let Some(obj) = data.as_object() {
-                for key in obj.keys() {
-                    all_fields.insert(key.clone());
-                }
-            }
-        }
-        
-        // Reach consensus for each field
-        for field in all_fields {
-            let field_responses: Vec<(Value, usize)> = responses.iter()
-                .filter_map(|(data, weight)| {
-                    if let Some(obj) = data.as_object() {
-                        if let Some(value) = obj.get(&field) {
-                            return Some((value.clone(), *weight));
-                        }
-                    }
-                    None
-                })
-                .collect();
-            
-            if !field_responses.is_empty() {
-                let field_value = self.scalar_consensus(&field_responses)?;
-                result.insert(field, field_value);
-            }
-        }
-        
-        Ok(Value::Object(result))
-    }
-    
-    /// Clear cache
-    pub fn clear_cache(&self) {
-        let mut cache = self.cache.lock().unwrap();
-        cache.clear();
-        
-        if let Some(log) = &self.audit_log {
-            let _ = log.log_external_api(
-                "OracleManager",
-                "Cleared oracle cache",
-                AuditSeverity::Info
-            );
-        }
-    }
-    
-    /// Create a rule for validating numeric range
-    pub fn create_numeric_range_rule(
-        name: &str,
-        min: Option<f64>,
-        max: Option<f64>,
-        error_message: &str
-    ) -> ValidationRule {
-        let mut params = serde_json::Map::new();
-        
-        if let Some(min_val) = min {
-            params.insert("min".to_string(), Value::Number(serde_json::Number::from_f64(min_val).unwrap()));
-        }
-        
-        if let Some(max_val) = max {
-            params.insert("max".to_string(), Value::Number(serde_json::Number::from_f64(max_val).unwrap()));
-        }
-        
-        ValidationRule {
-            name: name.to_string(),
-            rule_type: ValidationRuleType::NumericRange,
-            parameters: Value::Object(params),
-            error_message: error_message.to_string(),
-        }
-    }
-    
-    /// Create a rule for validating string pattern
-    pub fn create_string_pattern_rule(
-        name: &str,
-        pattern: Option<&str>,
-        allowed_values: Option<Vec<&str>>,
-        error_message: &str
-    ) -> ValidationRule {
-        let mut params = serde_json::Map::new();
-        
-        if let Some(pattern_val) = pattern {
-            params.insert("pattern".to_string(), Value::String(pattern_val.to_string()));
-        }
-        
-        if let Some(values) = allowed_values {
-            let allowed = values.iter()
-                .map(|v| Value::String(v.to_string()))
-                .collect();
-            
-            params.insert("allowed".to_string(), Value::Array(allowed));
-        }
-        
-        ValidationRule {
-            name: name.to_string(),
-            rule_type: ValidationRuleType::StringPattern,
-            parameters: Value::Object(params),
-            error_message: error_message.to_string(),
         }
     }
 }
 
-/// Create a REST API data source for weather data
+/// Wrapper to make OracleSource cloneable for Arc
+struct CloneableOracleSource(Arc<dyn OracleSource>);
+
+impl Clone for CloneableOracleSource {
+    fn clone(&self) -> Self {
+        CloneableOracleSource(Arc::clone(&self.0))
+    }
+}
+
+// --- Oracle Manager --- (Coordinates multiple sources)
+
+pub struct OracleManager {
+    sources: HashMap<String, Arc<dyn OracleSource>>,
+    audit_log: Option<Arc<SecurityAuditLog>>,
+    consensus_threshold: f64, // 0.0 to 1.0
+    min_sources_for_consensus: usize,
+    cache: Arc<Mutex<HashMap<String, CachedData>>>,
+    cache_duration: Duration,
+    background_update_interval: Duration,
+    background_tasks: tokio::task::JoinHandle<()>, // Handle for background tasks
+}
+
+impl OracleManager {
+    pub fn new(
+        audit_log: Option<Arc<SecurityAuditLog>>,
+        consensus_threshold: Option<f64>,
+        min_sources_for_consensus: Option<usize>,
+        cache_duration: Option<Duration>,
+        background_update_interval: Option<Duration>,
+    ) -> Self {
+        let cache_duration = cache_duration.unwrap_or_else(|| Duration::from_secs(300)); // Default 5 mins
+        let background_update_interval = background_update_interval.unwrap_or_else(|| Duration::from_secs(60)); // Default 1 min
+        let cache = Arc::new(Mutex::new(HashMap::new()));
+
+        // Spawn a dummy task initially, will be replaced when sources are added
+        let background_tasks = tokio::spawn(async {});
+
+        Self {
+            sources: HashMap::new(),
+            audit_log,
+            consensus_threshold: consensus_threshold.unwrap_or(0.51), // Default 51%
+            min_sources_for_consensus: min_sources_for_consensus.unwrap_or(2), // Default 2
+            cache,
+            cache_duration,
+            background_update_interval,
+            background_tasks,
+        }
+    }
+
+    pub fn add_source(&mut self, source: Arc<dyn OracleSource>) -> Result<()> {
+        let name = source.name().to_string();
+        if self.sources.contains_key(&name) {
+            return Err(anyhow!("Source '{}' already exists", name));
+        }
+        self.sources.insert(name.clone(), source.clone());
+
+        // Restart background tasks with the new source
+        self.restart_background_tasks();
+
+        if let Some(log) = &self.audit_log {
+            let _ = log.log_external_api("OracleManager", &format!("Added source '{}'", name), AuditSeverity::Info);
+        }
+        Ok(())
+    }
+
+    fn restart_background_tasks(&mut self) {
+        // Abort existing tasks
+        self.background_tasks.abort();
+
+        let sources_clone = self.sources.values().cloned().collect::<Vec<_>>();
+        let interval = self.background_update_interval;
+        let audit_log_clone = self.audit_log.clone();
+
+        // Spawn new combined task
+        self.background_tasks = tokio::spawn(async move {
+            if interval.is_zero() {
+                return; // No background updates needed
+            }
+            let mut interval_timer = tokio::time::interval(interval);
+            loop {
+                interval_timer.tick().await;
+                if let Some(log) = &audit_log_clone {
+                     let _ = log.log_external_api("OracleManager", "Running background source updates", AuditSeverity::Info);
+                 }
+
+                let futures = sources_clone.iter().map(|source| {
+                    let source = source.clone(); // Clone Arc for the async block
+                    async move {
+                        // Use default params if available, otherwise empty JSON object
+                        let params = source.config().default_params.clone().unwrap_or_else(|| json!({}));
+                        match source.fetch(&params).await {
+                            Ok(_) => { /* Data is implicitly cached by fetch */ }
+                            Err(e) => {
+                                // Log error, status is updated within fetch
+                                eprintln!("Background update failed for {}: {}", source.name(), e);
+                            }
+                        }
+                    }
+                });
+                futures::future::join_all(futures).await;
+            }
+        });
+    }
+
+    pub async fn get_consensus_data(&self, query_id: &str, params: &Value) -> Result<Value> {
+        let cache_key = format!("{}:{}", query_id, serde_json::to_string(params)?);
+
+        // Check cache
+        {
+            let cache = self.cache.lock().unwrap();
+            if let Some(cached) = cache.get(&cache_key) {
+                if cached.timestamp.elapsed() < self.cache_duration {
+                    return Ok(cached.value.clone());
+                }
+            }
+        }
+
+        let operational_sources: Vec<_> = self.sources.values()
+            .filter(|s| matches!(s.status(), OracleSourceStatus::Operational | OracleSourceStatus::Degraded(_)))
+            .cloned()
+            .collect();
+
+        if operational_sources.len() < self.min_sources_for_consensus {
+             return Err(anyhow!("Insufficient operational sources ({}/{})", operational_sources.len(), self.min_sources_for_consensus));
+         }
+
+        let futures = operational_sources.iter().map(|source| {
+            let source_clone = source.clone();
+            let params_clone = params.clone();
+            async move {
+                match source_clone.fetch(&params_clone).await {
+                    Ok(data) => {
+                        let validation_results = source_clone.validate(&data);
+                        if validation_results.iter().all(|r| r.passed) {
+                            Some((data, source_clone.config().weight))
+                        } else {
+                            eprintln!("Validation failed for {}", source_clone.name());
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Fetch failed for {}: {}", source_clone.name(), e);
+                        None
+                    }
+                }
+            }
+        });
+
+        let results: Vec<Option<(Value, u8)>> = futures::future::join_all(futures).await;
+        let valid_responses: Vec<(Value, u8)> = results.into_iter().flatten().collect();
+
+        if valid_responses.len() < self.min_sources_for_consensus {
+            return Err(anyhow!("Insufficient valid responses after fetch/validation ({}/{})", valid_responses.len(), self.min_sources_for_consensus));
+        }
+
+        // Calculate total weight of valid responses
+        let total_weight: u32 = valid_responses.iter().map(|(_, w)| *w as u32).sum();
+        // Calculate total possible weight from all originally operational sources
+        let max_possible_weight: u32 = operational_sources.iter().map(|s| s.config().weight as u32).sum();
+        let required_weight = (max_possible_weight as f64 * self.consensus_threshold) as u32;
+
+        if total_weight < required_weight {
+             return Err(anyhow!("Consensus weight threshold not met ({} < {})", total_weight, required_weight));
+         }
+
+        // Determine consensus based on the type of the first valid response
+        let consensus_value = match valid_responses.get(0) {
+            Some((first_value, _)) => match first_value {
+                 Value::Number(_) => self.numerical_consensus(&valid_responses)?,
+                 Value::String(_) | Value::Bool(_) | Value::Null => self.categorical_consensus(&valid_responses)?,
+                 Value::Object(_) => self.object_consensus(&valid_responses)?,
+                 Value::Array(_) => self.array_consensus(&valid_responses)?,
+            },
+            None => return Err(anyhow!("No valid responses available to determine consensus type")),
+        };
+
+
+        // Update cache
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.insert(cache_key.clone(), CachedData {
+                value: consensus_value.clone(),
+                timestamp: Instant::now()
+            });
+        }
+
+        if let Some(log) = &self.audit_log {
+             let _ = log.log_external_api("OracleManager", &format!("Consensus reached for '{}'", query_id), AuditSeverity::Info);
+         }
+
+        Ok(consensus_value)
+    }
+
+    // --- Consensus Helper Functions ---
+
+    fn numerical_consensus(&self, responses: &[(Value, u8)]) -> Result<Value> {
+        let mut weighted_values: Vec<(f64, u8)> = responses.iter()
+            .filter_map(|(v, w)| v.as_f64().map(|n| (n, *w)))
+            .collect();
+
+        if weighted_values.is_empty() {
+            return Err(anyhow!("No valid numerical values for consensus"));
+        }
+
+        // Basic outlier rejection (IQR)
+        weighted_values.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let values: Vec<f64> = weighted_values.iter().map(|(v, _)| *v).collect();
+        let q1_idx = (values.len() as f64 * 0.25).floor() as usize;
+        let q3_idx = (values.len() as f64 * 0.75).floor() as usize;
+        let q1 = values.get(q1_idx).cloned().unwrap_or(0.0);
+        let q3 = values.get(q3_idx).cloned().unwrap_or(0.0);
+        let iqr = q3 - q1;
+        let lower_bound = q1 - 1.5 * iqr;
+        let upper_bound = q3 + 1.5 * iqr;
+
+        let filtered_weighted_values: Vec<(f64, u8)> = weighted_values.into_iter()
+            .filter(|(v, _)| *v >= lower_bound && *v <= upper_bound)
+            .collect();
+
+        if filtered_weighted_values.is_empty() {
+            return Err(anyhow!("All numerical values rejected as outliers"));
+        }
+
+        // Weighted Median
+        let mut sorted_filtered = filtered_weighted_values;
+        sorted_filtered.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let total_weight: u32 = sorted_filtered.iter().map(|(_, w)| *w as u32).sum();
+        let mid_weight = total_weight / 2;
+        let mut current_weight: u32 = 0;
+
+        for (value, weight) in &sorted_filtered {
+            current_weight += *weight as u32;
+            if current_weight > mid_weight {
+                // Safely create Number from f64
+                return Ok(serde_json::json!(*value));
+            }
+        }
+        // Fallback: return the last value if loop completes (shouldn't happen with non-zero weight)
+        let last_val = sorted_filtered.last().map(|(v,_)| *v).unwrap_or(0.0);
+        Ok(serde_json::json!(last_val))
+    }
+
+    fn categorical_consensus(&self, responses: &[(Value, u8)]) -> Result<Value> {
+        let mut value_weights: HashMap<String, u32> = HashMap::new();
+        let mut total_weight: u32 = 0;
+
+        for (value, weight) in responses {
+            let key = match value {
+                Value::Null => "null".to_string(),
+                Value::Bool(b) => b.to_string(),
+                Value::String(s) => s.clone(),
+                _ => continue,
+            };
+            *value_weights.entry(key).or_insert(0) += *weight as u32;
+            total_weight += *weight as u32;
+        }
+
+        if total_weight == 0 {
+            return Err(anyhow!("No valid categorical values for consensus"));
+        }
+
+        let threshold_weight = (total_weight as f64 * self.consensus_threshold) as u32;
+
+        let consensus_entry = value_weights.into_iter().max_by_key(|&(_, w)| w);
+
+        if let Some((value_str, weight)) = consensus_entry {
+            if weight >= threshold_weight {
+                match value_str.as_str() {
+                    "null" => Ok(Value::Null),
+                    "true" => Ok(Value::Bool(true)),
+                    "false" => Ok(Value::Bool(false)),
+                    s => Ok(Value::String(s.to_string())),
+                }
+            } else {
+                Err(anyhow!("Categorical consensus threshold not met (max weight {} < threshold {})", weight, threshold_weight))
+            }
+        } else {
+            Err(anyhow!("No categorical consensus value found"))
+        }
+    }
+
+    // Simplified object/array consensus using string representation
+    fn object_consensus(&self, responses: &[(Value, u8)]) -> Result<Value> {
+        self.stringified_consensus(responses, "object")
+    }
+
+    fn array_consensus(&self, responses: &[(Value, u8)]) -> Result<Value> {
+        self.stringified_consensus(responses, "array")
+    }
+
+    fn stringified_consensus(&self, responses: &[(Value, u8)], value_type: &str) -> Result<Value> {
+        let mut value_weights: HashMap<String, u32> = HashMap::new();
+        let mut total_weight: u32 = 0;
+
+        for (value, weight) in responses {
+            if (value_type == "object" && value.is_object()) || (value_type == "array" && value.is_array()) {
+                match serde_json::to_string(value) {
+                    Ok(s) => {
+                        *value_weights.entry(s).or_insert(0) += *weight as u32;
+                        total_weight += *weight as u32;
+                    }
+                    Err(_) => continue, // Skip if cannot serialize
+                }
+            }
+        }
+
+        if value_weights.is_empty() {
+             return Err(anyhow!("No valid {} values for consensus", value_type));
+         }
+         if total_weight == 0 {
+             return Err(anyhow!("Total weight is zero for {} consensus", value_type));
+         }
+
+        let threshold_weight = (total_weight as f64 * self.consensus_threshold).ceil() as u32; // Use ceil for threshold
+        let consensus_entry = value_weights.into_iter().max_by_key(|&(_, w)| w);
+
+        if let Some((value_str, weight)) = consensus_entry {
+            if weight >= threshold_weight {
+                serde_json::from_str(&value_str).map_err(|e| anyhow!("Failed to parse consensus {}: {}", value_type, e))
+            } else {
+                Err(anyhow!("{} consensus threshold not met (max weight {} < threshold {})", value_type, weight, threshold_weight))
+            }
+        } else {
+            Err(anyhow!("No {} consensus value found", value_type))
+        }
+    }
+}
+
+impl Drop for OracleManager {
+    fn drop(&mut self) {
+        self.background_tasks.abort();
+    }
+}
+
+// --- Factory Functions --- (Moved from specific API modules)
+
+pub fn create_numeric_range_rule(
+    name: &str, min: Option<f64>, max: Option<f64>, error_message: &str
+) -> ValidationRule {
+    let params = serde_json::json!({ "min": min, "max": max });
+    ValidationRule {
+        name: name.to_string(),
+        rule_type: ValidationRuleType::NumericRange,
+        parameters: params,
+        error_message: error_message.to_string(),
+    }
+}
+
+pub fn create_string_pattern_rule(
+    name: &str, pattern: Option<&str>, allowed_values: Option<Vec<&str>>, error_message: &str
+) -> ValidationRule {
+    let params = serde_json::json!({ "pattern": pattern, "allowed": allowed_values });
+    ValidationRule {
+        name: name.to_string(),
+        rule_type: ValidationRuleType::StringPattern,
+        parameters: params,
+        error_message: error_message.to_string(),
+    }
+}
+
 pub fn create_weather_api_source(
     api_key: &str,
-    audit_log: Option<Arc<SecurityAuditLog>>
-) -> Result<RestApiSource> {
+    audit_log: Option<Arc<SecurityAuditLog>>,
+    cache: Arc<Mutex<HashMap<String, CachedData>>>,
+    cache_duration: Duration,
+) -> Result<RestApiOracleSource> {
     let config = OracleSourceConfig {
         name: "OpenWeatherMap".to_string(),
         url: "https://api.openweathermap.org/data/2.5/weather".to_string(),
         source_type: "REST".to_string(),
         auth_header: None,
-        default_params: Some(json!({
-            "appid": api_key,
-            "units": "metric"
-        })),
+        default_params: Some(json!({ "appid": api_key, "units": "metric" })),
         validation_rules: vec![
-            OracleManager::create_numeric_range_rule(
-                "temperature_range",
-                Some(-100.0),
-                Some(100.0),
-                "Temperature out of valid range"
-            ),
-            OracleManager::create_numeric_range_rule(
-                "humidity_range",
-                Some(0.0),
-                Some(100.0),
-                "Humidity out of valid range"
-            ),
+            create_numeric_range_rule("temp_range", Some(-100.0), Some(100.0), "Temp out of range"),
+            create_numeric_range_rule("humidity_range", Some(0.0), Some(100.0), "Humidity out of range"),
         ],
         weight: 100,
         timeout_ms: 5000,
-        rate_limit: Some(60), // 60 requests per minute
+        rate_limit: Some(60),
         requires_auth: true,
+        path: vec!["main".to_string()], // Extract the 'main' object
+        required_fields: vec!["temp".to_string(), "humidity".to_string()], // Require temp and humidity
     };
-    
-    RestApiSource::new(config, audit_log)
+    RestApiOracleSource::new(config, audit_log, cache, cache_duration)
 }
 
-/// Create a REST API data source for flight data
 pub fn create_flight_api_source(
     api_key: &str,
-    audit_log: Option<Arc<SecurityAuditLog>>
-) -> Result<RestApiSource> {
+    audit_log: Option<Arc<SecurityAuditLog>>,
+    cache: Arc<Mutex<HashMap<String, CachedData>>>,
+    cache_duration: Duration,
+) -> Result<RestApiOracleSource> {
     let config = OracleSourceConfig {
         name: "AviationStack".to_string(),
         url: "http://api.aviationstack.com/v1/flights".to_string(),
         source_type: "REST".to_string(),
-        auth_header: None,
-        default_params: Some(json!({
-            "access_key": api_key
-        })),
+        auth_header: None, // Key is passed as query param
+        default_params: Some(json!({ "access_key": api_key })),
         validation_rules: vec![
-            OracleManager::create_numeric_range_rule(
-                "delay_range",
-                Some(0.0),
-                Some(86400.0), // Max 24 hours (in seconds)
-                "Delay out of valid range"
-            ),
-            OracleManager::create_string_pattern_rule(
-                "flight_status",
-                None,
-                Some(vec!["scheduled", "active", "landed", "cancelled", "incident", "diverted"]),
-                "Invalid flight status"
-            ),
+             create_numeric_range_rule("delay_range", Some(0.0), Some(86400.0*2.0), "Delay out of range"), // Allow up to 2 days delay
+             create_string_pattern_rule("status", None, Some(vec!["scheduled", "active", "landed", "cancelled", "incident", "diverted"]), "Invalid status"),
         ],
         weight: 100,
         timeout_ms: 10000,
-        rate_limit: Some(30), // 30 requests per minute
+        rate_limit: Some(100), // Check free tier limits
         requires_auth: true,
+         path: vec!["data".to_string(), "0".to_string()], // Extract the first flight object in the 'data' array
+         required_fields: vec!["flight_status".to_string(), "departure".to_string(), "arrival".to_string()], // Require status and airport info
     };
-    
-    RestApiSource::new(config, audit_log)
+    RestApiOracleSource::new(config, audit_log, cache, cache_duration)
 }
 
-/// Create multiple weather data sources for redundancy
+/// Creates a complete weather oracle manager with multiple sources.
 pub fn create_weather_oracle(
-    audit_log: Option<Arc<SecurityAuditLog>>
+    audit_log: Option<Arc<SecurityAuditLog>>,
+    cache_duration: Option<Duration>,
+    update_interval: Option<Duration>,
 ) -> Result<OracleManager> {
-    let mut manager = OracleManager::new(
-        audit_log.clone(),
-        Some(60), // 60% consensus threshold
-        Some(true), // Validation required
-        Some(300), // 5 minute cache
-    );
-    
-    // OpenWeatherMap
-    let owm_key = std::env::var("OPENWEATHERMAP_API_KEY")
-        .unwrap_or_else(|_| "YOUR_OPENWEATHERMAP_API_KEY".to_string());
-    
-    let owm_source = create_weather_api_source(&owm_key, audit_log.clone())?;
-    manager.add_source(Box::new(owm_source))?;
-    
-    // Weather API (mock for example)
-    let config = OracleSourceConfig {
-        name: "WeatherAPI".to_string(),
-        url: "https://api.weatherapi.com/v1/current.json".to_string(),
-        source_type: "REST".to_string(),
-        auth_header: None,
-        default_params: Some(json!({
-            "key": "YOUR_WEATHERAPI_KEY", // Would use env var in real implementation
-            "aqi": "no"
-        })),
-        validation_rules: vec![
-            OracleManager::create_numeric_range_rule(
-                "temperature_range",
-                Some(-100.0),
-                Some(100.0),
-                "Temperature out of valid range"
-            ),
-        ],
-        weight: 80, // Lower weight than primary source
-        timeout_ms: 5000,
-        rate_limit: Some(40), // 40 requests per minute
-        requires_auth: true,
-    };
-    
-    // In a real implementation, we would add all sources
-    // For now, we'll just mock that this succeeded
-    
+    let mut manager = OracleManager::new(audit_log.clone(), Some(0.6), Some(1), cache_duration, update_interval);
+    let cache = manager.cache.clone(); // Use manager's cache
+    let effective_cache_duration = manager.cache_duration;
+
+    // Source 1: OpenWeatherMap
+    if let Ok(api_key) = std::env::var("OPENWEATHERMAP_API_KEY") {
+        if !api_key.is_empty() {
+            match create_weather_api_source(&api_key, audit_log.clone(), cache.clone(), effective_cache_duration) {
+                Ok(source) => {
+                    println!("Adding OpenWeatherMap source...");
+                    manager.add_source(Arc::new(source))?;
+                }
+                Err(e) => eprintln!("Failed to create OpenWeatherMap source: {}", e),
+            }
+        } else {
+             eprintln!("OPENWEATHERMAP_API_KEY is set but empty, skipping source.");
+        }
+    } else {
+        eprintln!("OPENWEATHERMAP_API_KEY not set, skipping source.");
+    }
+
+    // Add more sources here if available (e.g., WeatherAPI, AccuWeather)
+    // Ensure they use different API keys and potentially different weights/configs
+
+    if manager.sources.is_empty() {
+        eprintln!("WARN: No weather oracle sources could be created. Check API keys and environment variables.");
+        // Optionally return an error, or allow the manager to exist with no sources
+        // return Err(anyhow!("No weather oracle sources could be created."));
+    }
+
+    println!("Weather Oracle Manager created with {} sources.", manager.sources.len());
     Ok(manager)
 }
+
+pub async fn create_weather_oracle_async(
+    config: &OracleSourceConfig,
+    http_client: reqwest::Client,
+    cache: Arc<Mutex<HashMap<String, CachedData>>>,
+    update_interval: Duration,
+    cache_duration: Duration,
+) -> Result<Box<dyn OracleSource>> { // Return Box<dyn OracleSource>
+    let _config = config.clone(); // Clone config for the closure
+    let url_template = config.url.clone();
+    let path_template = config.path.clone();
+
+    // Background task to update cache
+    let cache_clone = cache.clone();
+    let client_clone = http_client.clone();
+    let url_clone = url_template.clone(); // Clone for the background task
+    let path_clone = path_template.clone(); // Clone for the background task
+    tokio::spawn(async move {
+        if update_interval == Duration::from_secs(0) {
+            return; // No background updates needed
+        }
+        let mut interval = tokio::time::interval(update_interval);
+        loop {
+            interval.tick().await;
+            // Fetch data (replace with actual API call logic)
+            match client_clone.get(&url_clone).send().await {
+                Ok(response) => {
+                    if let Ok(data) = response.json::<Value>().await {
+                         // Extract data using path_clone
+                         let mut current = &data;
+                         let mut extracted = false;
+                         for key in &path_clone {
+                             if let Some(obj) = current.as_object() {
+                                 if let Some(next) = obj.get(key) {
+                                     current = next;
+                                     extracted = true; // Mark as extracted if we successfully navigate
+                                 } else {
+                                     extracted = false; break; // Path broken
+                                 }
+                             } else {
+                                extracted = false; break; // Not an object
+                             }
+                         }
+
+                        if extracted {
+                            let mut cache_guard = cache_clone.lock().unwrap();
+                             cache_guard.insert("weather_data".to_string(), CachedData {
+                                 value: current.clone(), // Cache the extracted value
+                                 timestamp: Instant::now(),
+                             });
+                         } else {
+                            eprintln!("Background weather update: Failed to extract data with path.");
+                         }
+                    } else {
+                        eprintln!("Background weather update: Failed to parse JSON.");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Background weather update failed: {}", e);
+                }
+            }
+        }
+    });
+
+    // Return the OracleSource implementation
+    let source = SimpleOracleSource {
+        name: config.name.clone(),
+        url_template,
+        path: path_template,
+        client: http_client,
+        cache,
+        cache_duration,
+    };
+
+    Ok(Box::new(source) as Box<dyn OracleSource>)
+}
+
+// A simplified OracleSource for the async creation function
+struct SimpleOracleSource {
+    name: String,
+    url_template: String,
+    path: Vec<String>,
+    client: reqwest::Client,
+    cache: Arc<Mutex<HashMap<String, CachedData>>>,
+    cache_duration: Duration,
+}
+
+#[async_trait]
+impl OracleSource for SimpleOracleSource {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn config(&self) -> &OracleSourceConfig {
+        // This is simplified; a real implementation would store the full config
+         panic!("SimpleOracleSource does not fully store config");
+    }
+
+    async fn fetch(&self, _params: &Value) -> Result<Value> { // Changed params to _params
+        let cache_key = "weather_data".to_string(); // Simplified key
+
+        // Check cache
+        {
+            let cache = self.cache.lock().unwrap();
+            if let Some(cached_data) = cache.get(&cache_key) {
+                 if cached_data.timestamp.elapsed() < self.cache_duration {
+                     return Ok(cached_data.value.clone());
+                 }
+            }
+        }
+
+        // Fetch from API (replace with actual logic using url_template and params)
+        let response = self.client.get(&self.url_template).send().await?;
+        let data = response.json::<Value>().await?;
+
+         // Extract data using path
+         let mut current = &data;
+         for key in &self.path {
+             if let Some(obj) = current.as_object() {
+                 current = obj.get(key).ok_or_else(|| anyhow!("Invalid path key: {}", key))?;
+             } else {
+                 return Err(anyhow!("Expected object in path, found something else"));
+             }
+         }
+         let extracted_value = current.clone();
+
+        // Update cache
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.insert(cache_key, CachedData {
+                value: extracted_value.clone(),
+                timestamp: Instant::now(),
+            });
+        }
+
+        Ok(extracted_value)
+    }
+
+    fn validate(&self, _data: &Value) -> Vec<ValidationResult> {
+        // Simplified: Assume valid
+        vec![]
+    }
+
+    fn status(&self) -> OracleSourceStatus {
+        // Simplified: Assume operational
+        OracleSourceStatus::Operational
+    }
+
+    async fn run_background_updates(&self, _update_interval: Duration) {
+        // Background task is already running from the creation function
+    }
+} 

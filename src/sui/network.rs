@@ -1,31 +1,68 @@
+use std::sync::{Arc, Mutex};
 use anyhow::{Result, anyhow};
 use reqwest;
 use serde::{Serialize, Deserialize};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
-use tokio::time::sleep;
+use std::str::FromStr;
+use sui_sdk::SuiClient;
+use sui_sdk::SuiClientBuilder;
+use async_trait::async_trait;
+use crate::sui::SuiClientProvider;
 
-/// Network type for SUI
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Enum representing different network types that the system can connect to
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NetworkType {
-    /// Local development environment
-    Local,
-    /// SUI devnet for development
-    Devnet,
-    /// SUI testnet for testing
+    /// Sui Testnet
     Testnet,
-    /// SUI mainnet for production
+    /// Sui Devnet (for development and testing)
+    Devnet,
+    /// Sui Mainnet (production environment)
     Mainnet,
+    /// Local network (for testing and development)
+    Local,
+    /// Custom network with a specified endpoint
+    Custom(String),
 }
 
 impl std::fmt::Display for NetworkType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NetworkType::Local => write!(f, "local"),
-            NetworkType::Devnet => write!(f, "devnet"),
-            NetworkType::Testnet => write!(f, "testnet"),
-            NetworkType::Mainnet => write!(f, "mainnet"),
+            NetworkType::Testnet => write!(f, "Testnet"),
+            NetworkType::Devnet => write!(f, "Devnet"),
+            NetworkType::Mainnet => write!(f, "Mainnet"),
+            NetworkType::Local => write!(f, "Local"),
+            NetworkType::Custom(url) => write!(f, "Custom({})", url),
+        }
+    }
+}
+
+impl FromStr for NetworkType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "testnet" => Ok(NetworkType::Testnet),
+            "devnet" => Ok(NetworkType::Devnet),
+            "mainnet" => Ok(NetworkType::Mainnet),
+            "local" => Ok(NetworkType::Local),
+            _ if s.starts_with("http://") || s.starts_with("https://") => {
+                Ok(NetworkType::Custom(s.to_string()))
+            }
+            _ => Err(anyhow!("Unknown network type: {}", s)),
+        }
+    }
+}
+
+impl NetworkType {
+    /// Get the RPC endpoint URL for the network type
+    pub fn get_rpc_url(&self) -> String {
+        match self {
+            NetworkType::Testnet => "https://fullnode.testnet.sui.io:443".to_string(),
+            NetworkType::Devnet => "https://fullnode.devnet.sui.io:443".to_string(),
+            NetworkType::Mainnet => "https://fullnode.mainnet.sui.io:443".to_string(),
+            NetworkType::Local => "http://localhost:9000".to_string(),
+            NetworkType::Custom(url) => url.clone(),
         }
     }
 }
@@ -41,115 +78,76 @@ pub enum NodeStatus {
     Down(String),
 }
 
-/// Chain details including network parameters
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Configuration for a specific blockchain/network
+#[derive(Debug, Clone)]
 pub struct ChainConfig {
-    /// Network type
+    /// The type of network
     pub network_type: NetworkType,
-    /// Chain ID string
-    pub chain_id: String,
-    /// RPC endpoints for this network
-    pub rpc_endpoints: Vec<String>,
-    /// Explorer URL for this network
-    pub explorer_url: Option<String>,
-    /// Minimum gas price for this network
-    pub min_gas_price: u64,
-    /// Recommended gas price for this network
-    pub recommended_gas_price: u64,
-    /// Maximum gas price for this network
-    pub max_gas_price: u64,
-    /// Block confirmation time in milliseconds
-    pub block_time_ms: u64,
+    /// Additional configuration parameters specific to this chain
+    pub params: HashMap<String, String>,
 }
 
 impl ChainConfig {
-    /// Create a new chain configuration for the specified network type
     pub fn new(network_type: NetworkType) -> Self {
-        match network_type {
-            NetworkType::Local => Self::local_network(),
-            NetworkType::Devnet => Self::devnet(),
-            NetworkType::Testnet => Self::testnet(),
-            NetworkType::Mainnet => Self::mainnet(),
-        }
-    }
-    
-    /// Create a local network configuration
-    fn local_network() -> Self {
         Self {
-            network_type: NetworkType::Local,
-            chain_id: "local".to_string(),
-            rpc_endpoints: vec!["http://localhost:9000".to_string()],
-            explorer_url: None,
-            min_gas_price: 1,
-            recommended_gas_price: 10,
-            max_gas_price: 1000,
-            block_time_ms: 400,
+            network_type,
+            params: HashMap::new(),
+        }
+    }
+
+    pub fn with_param(mut self, key: &str, value: &str) -> Self {
+        self.params.insert(key.to_string(), value.to_string());
+        self
+    }
+    
+    // Helper methods to access common parameters
+    pub fn get_chain_id(&self) -> Option<String> {
+        self.params.get("chain_id").cloned()
+    }
+    
+    pub fn get_rpc_endpoints(&self) -> Vec<String> {
+        if let Some(endpoints) = self.params.get("rpc_endpoints") {
+            endpoints.split(',').map(|s| s.trim().to_string()).collect()
+        } else {
+            vec![self.network_type.get_rpc_url()]
         }
     }
     
-    /// Create a devnet configuration
-    fn devnet() -> Self {
-        Self {
-            network_type: NetworkType::Devnet,
-            chain_id: "sui-devnet".to_string(),
-            rpc_endpoints: vec![
-                "https://fullnode.devnet.sui.io:443".to_string(),
-            ],
-            explorer_url: Some("https://explorer.sui.io/txblock".to_string()),
-            min_gas_price: 1,
-            recommended_gas_price: 50,
-            max_gas_price: 2000,
-            block_time_ms: 400,
-        }
+    pub fn get_explorer_url(&self) -> Option<String> {
+        self.params.get("explorer_url").cloned()
     }
     
-    /// Create a testnet configuration
-    fn testnet() -> Self {
-        Self {
-            network_type: NetworkType::Testnet,
-            chain_id: "sui-testnet".to_string(),
-            rpc_endpoints: vec![
-                "https://fullnode.testnet.sui.io:443".to_string(),
-                "https://sui-testnet.public.blastapi.io".to_string(),
-                "https://sui-testnet-rpc.allthatnode.com".to_string(),
-            ],
-            explorer_url: Some("https://explorer.sui.io/txblock".to_string()),
-            min_gas_price: 1,
-            recommended_gas_price: 75,
-            max_gas_price: 10000,
-            block_time_ms: 400,
-        }
+    pub fn get_min_gas_price(&self) -> u64 {
+        self.params.get("min_gas_price")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(1)
     }
     
-    /// Create a mainnet configuration
-    fn mainnet() -> Self {
-        Self {
-            network_type: NetworkType::Mainnet,
-            chain_id: "sui-mainnet".to_string(),
-            rpc_endpoints: vec![
-                "https://fullnode.mainnet.sui.io:443".to_string(),
-                "https://sui-mainnet.public.blastapi.io".to_string(),
-                "https://sui-mainnet-rpc.allthatnode.com".to_string(),
-            ],
-            explorer_url: Some("https://explorer.sui.io/txblock".to_string()),
-            min_gas_price: 50,
-            recommended_gas_price: 1000,
-            max_gas_price: 50000,
-            block_time_ms: 400,
-        }
+    pub fn get_recommended_gas_price(&self) -> u64 {
+        self.params.get("recommended_gas_price")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(100)
     }
     
-    /// Generate a transaction explorer URL
-    pub fn get_transaction_url(&self, tx_digest: &str) -> Option<String> {
-        self.explorer_url.as_ref().map(|url| {
-            format!("{}/{}", url, tx_digest)
-        })
+    pub fn get_max_gas_price(&self) -> u64 {
+        self.params.get("max_gas_price")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(10000)
+    }
+    
+    pub fn get_block_time_ms(&self) -> u64 {
+        self.params.get("block_time_ms")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2000) // Default 2 seconds for Sui
     }
 }
 
-/// Network manager to handle connections to different networks
-#[derive(Debug, Clone)]
+/// Manager for handling network connections and client instances
 pub struct NetworkManager {
+    /// Default network type to use when not specified
+    default_network: NetworkType,
+    /// Map of network type to SuiClient
+    clients: HashMap<NetworkType, Arc<SuiClient>>,
     /// Current active network configuration
     active_config: Arc<Mutex<ChainConfig>>,
     /// HTTP client for making RPC requests
@@ -161,11 +159,13 @@ pub struct NetworkManager {
 }
 
 impl NetworkManager {
-    /// Create a new network manager with the specified network type
-    pub fn new(network_type: NetworkType) -> Self {
-        let config = ChainConfig::new(network_type);
+    /// Create a new NetworkManager with the specified default network
+    pub async fn new(default_network: NetworkType) -> Result<Self> {
+        let config = ChainConfig::new(default_network.clone());
         
-        Self {
+        let mut manager = Self {
+            default_network: default_network.clone(),
+            clients: HashMap::new(),
             active_config: Arc::new(Mutex::new(config)),
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
@@ -173,7 +173,51 @@ impl NetworkManager {
                 .expect("Failed to create HTTP client"),
             node_status_cache: Arc::new(Mutex::new(HashMap::new())),
             status_cache_ttl: 60, // Cache node status for 60 seconds
+        };
+
+        // Initialize the default client
+        let client = manager.init_client(default_network).await?;
+        manager.clients.insert(manager.default_network.clone(), client);
+
+        Ok(manager)
+    }
+
+    /// Initialize a client for the specified network type
+    pub async fn init_client(&self, network_type: NetworkType) -> Result<Arc<SuiClient>> {
+        let rpc_url = network_type.get_rpc_url();
+        println!("Initializing SuiClient for {}: {}", 
+            match &network_type {
+                NetworkType::Custom(url) => format!("Custom({})", url),
+                _ => format!("{:?}", network_type),
+            },
+            rpc_url
+        );
+
+        let client = SuiClientBuilder::default()
+            .build(&rpc_url)
+            .await
+            .map_err(|e| anyhow!("Failed to create SuiClient for {}: {}", rpc_url, e))?;
+
+        Ok(Arc::new(client))
+    }
+
+    /// Get the client for the specified network type, initializing it if needed
+    pub async fn get_client_for_network(&mut self, network_type: NetworkType) -> Result<Arc<SuiClient>> {
+        if !self.clients.contains_key(&network_type) {
+            let client = self.init_client(network_type.clone()).await?;
+            self.clients.insert(network_type.clone(), client);
         }
+
+        self.clients.get(&network_type)
+            .cloned()
+            .ok_or_else(|| anyhow!("Failed to get client for network type: {:?}", network_type))
+    }
+
+    /// Get the default client
+    pub async fn get_default_client(&self) -> Result<Arc<SuiClient>> {
+        self.clients.get(&self.default_network)
+            .cloned()
+            .ok_or_else(|| anyhow!("Default client not initialized"))
     }
     
     /// Switch to a different network
@@ -202,14 +246,15 @@ impl NetworkManager {
         let config = self.active_config.lock().unwrap();
         
         // Check if we have any endpoints
-        if config.rpc_endpoints.is_empty() {
-            return Err(anyhow!("No RPC endpoints available for {} network", config.network_type));
+        let endpoints = config.get_rpc_endpoints();
+        if endpoints.is_empty() {
+            return Err(anyhow!("No RPC endpoints available for {:?} network", config.network_type));
         }
         
         // Return the first endpoint for now
         // In a more advanced implementation, we'd select the best one
         // based on health checks, latency, etc.
-        Ok(config.rpc_endpoints[0].clone())
+        Ok(endpoints[0].clone())
     }
     
     /// Check if a node is healthy
@@ -296,9 +341,10 @@ impl NetworkManager {
     /// Get a healthy RPC endpoint, trying multiple endpoints if needed
     pub async fn get_healthy_rpc_url(&self) -> Result<String> {
         let config = self.active_config.lock().unwrap();
+        let endpoints = config.get_rpc_endpoints();
         
         // Try each endpoint until we find a healthy one
-        for endpoint in &config.rpc_endpoints {
+        for endpoint in &endpoints {
             match self.is_node_healthy(endpoint).await {
                 Ok(NodeStatus::Healthy) => {
                     return Ok(endpoint.clone());
@@ -319,24 +365,26 @@ impl NetworkManager {
         }
         
         // If we couldn't find a healthy endpoint, return the first one as a fallback
-        if !config.rpc_endpoints.is_empty() {
+        if !endpoints.is_empty() {
             println!("Warning: No healthy endpoints found. Using first endpoint as fallback.");
-            return Ok(config.rpc_endpoints[0].clone());
+            return Ok(endpoints[0].clone());
         }
         
-        Err(anyhow!("No RPC endpoints available for {} network", config.network_type))
+        Err(anyhow!("No RPC endpoints available for {:?} network", config.network_type))
     }
     
     /// Verify that a transaction is targeting the correct chain
     pub fn verify_chain_id(&self, chain_id: &str) -> Result<()> {
         let config = self.active_config.lock().unwrap();
         
-        if config.chain_id != chain_id {
-            return Err(anyhow!(
-                "Chain ID mismatch. Transaction targets '{}' but active network is '{}'", 
-                chain_id, 
-                config.chain_id
-            ));
+        if let Some(config_chain_id) = config.get_chain_id() {
+            if config_chain_id != chain_id {
+                return Err(anyhow!(
+                    "Chain ID mismatch. Transaction targets '{}' but active network is '{}'", 
+                    chain_id, 
+                    config_chain_id
+                ));
+            }
         }
         
         Ok(())
@@ -345,15 +393,16 @@ impl NetworkManager {
     /// Get the recommended gas price for the current network
     pub fn get_recommended_gas_price(&self) -> u64 {
         let config = self.active_config.lock().unwrap();
-        config.recommended_gas_price
+        config.get_recommended_gas_price()
     }
     
     /// Check the health of all configured endpoints
     pub async fn health_check_all(&self) -> HashMap<String, NodeStatus> {
         let config = self.active_config.lock().unwrap();
+        let endpoints = config.get_rpc_endpoints();
         let mut results = HashMap::new();
         
-        for endpoint in &config.rpc_endpoints {
+        for endpoint in &endpoints {
             match self.is_node_healthy(endpoint).await {
                 Ok(status) => {
                     results.insert(endpoint.clone(), status);
@@ -373,6 +422,31 @@ impl NetworkManager {
         
         // For SUI, transactions are typically considered final after 1 block
         // Return the block time as the finality time
-        config.block_time_ms
+        config.get_block_time_ms()
+    }
+    
+    /// Check if the network is currently available
+    pub async fn check_network_status(&self) -> bool {
+        match self.get_healthy_rpc_url().await {
+            Ok(_) => true,
+            Err(_) => false,
+        }
+    }
+}
+
+#[async_trait]
+impl SuiClientProvider for NetworkManager {
+    async fn get_client(&self) -> Result<Arc<SuiClient>> {
+        self.get_default_client().await
+    }
+
+    async fn get_client_for_endpoint(&self, endpoint: &str) -> Result<Arc<SuiClient>> {
+        let network_type = NetworkType::from_str(endpoint)?;
+        let client = SuiClientBuilder::default()
+            .build(&network_type.get_rpc_url())
+            .await
+            .map_err(|e| anyhow!("Failed to create SuiClient for {}: {}", endpoint, e))?;
+
+        Ok(Arc::new(client))
     }
 }
