@@ -1,0 +1,72 @@
+[
+  {
+    "transaction_type": "javascript",
+    "generation_time_ms": null,
+    "sui_time_ms": 0.0576,
+    "execution_time_ms": 13.4226,
+    "verification_time_ms": null,
+    "middleware_overhead_ms": null,
+    "middleware_overhead_percent": null,
+    "total_time_ms": 122.76289999999999,
+    "total_size_bytes": null,
+    "verified": null,
+    "verification_attempts": null,
+    "chain_id": null
+  },
+  {
+    "transaction_type": "javascript",
+    "generation_time_ms": null,
+    "sui_time_ms": 0.0146,
+    "execution_time_ms": 8.3923,
+    "verification_time_ms": null,
+    "middleware_overhead_ms": null,
+    "middleware_overhead_percent": null,
+    "total_time_ms": 105.5928,
+    "total_size_bytes": null,
+    "verified": null,
+    "verification_attempts": null,
+    "chain_id": null
+  },
+  {
+    "transaction_type": "javascript",
+    "generation_time_ms": null,
+    "sui_time_ms": 0.0156,
+    "execution_time_ms": 8.2798,
+    "verification_time_ms": null,
+    "middleware_overhead_ms": null,
+    "middleware_overhead_percent": null,
+    "total_time_ms": 83.1954,
+    "total_size_bytes": null,
+    "verified": null,
+    "verification_attempts": null,
+    "chain_id": null
+  },
+  {
+    "transaction_type": "javascript",
+    "generation_time_ms": null,
+    "sui_time_ms": 0.0168,
+    "execution_time_ms": 8.2728,
+    "verification_time_ms": null,
+    "middleware_overhead_ms": null,
+    "middleware_overhead_percent": null,
+    "total_time_ms": 100.6836,
+    "total_size_bytes": null,
+    "verified": null,
+    "verification_attempts": null,
+    "chain_id": null
+  },
+  {
+    "transaction_type": "javascript",
+    "generation_time_ms": null,
+    "sui_time_ms": 0.019700000000000002,
+    "execution_time_ms": 8.5572,
+    "verification_time_ms": null,
+    "middleware_overhead_ms": null,
+    "middleware_overhead_percent": null,
+    "total_time_ms": 76.0567,
+    "total_size_bytes": null,
+    "verified": null,
+    "verification_attempts": null,
+    "chain_id": null
+  }
+]
