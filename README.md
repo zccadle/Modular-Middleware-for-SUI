@@ -83,7 +83,7 @@ For consistent testing and deployment, use the Docker image:
 docker build -t sui-benchmark-suite .
 
 # Run benchmarks with Docker
-docker run --rm -e SUBMITTER_ADDRESS="0x597b1e8c6e505090829ccf58d51d823200f687db99178dd98580c9f2ec28fe04" -e SUBMITTER_KEYPAIR_BASE64="AE0qgf2CMBXlodfjXf1W/zdgXsJb8j/MseH3Lhuc2KID" -v "${PWD}/benchmark_results:/app/results" sui-benchmark-suite --benchmark --output-dir /app/results
+docker run --rm -e SUBMITTER_ADDRESS="<YOUR_SUI_ADDRESS>" -e SUBMITTER_KEYPAIR_BASE64="<BASE64_KEYPAIR>" -v "${PWD}/benchmark_results:/app/results" sui-benchmark-suite --benchmark --output-dir /app/results
 ```
 
 ### Required Environment Variables
@@ -92,8 +92,8 @@ Before running the middleware **outside of Docker** you need to make a few varia
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
-| `SUBMITTER_ADDRESS` | Sui address that will submit on-chain verification txs | `0x597b…fe04` |
-| `SUBMITTER_KEYPAIR_BASE64` | Base-64 encoded keypair for the above address | `AE0qgf2CMBXl…` |
+| `SUBMITTER_ADDRESS` | Sui address that will submit on-chain verification txs | `0x<your-address>` |
+| `SUBMITTER_KEYPAIR_BASE64` | Base-64 encoded keypair for the above address | `<base64-keypair>` |
 | `AVIATIONSTACK_API_KEY` | (Optional) Real-time flight data for the flight-delay demos | `a8f7…56a` |
 | `OPENWEATHERMAP_API_KEY` | (Optional) Weather oracle key for the weather-based demo | `<your-key>` |
 
