@@ -10,10 +10,14 @@ use base64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use sui_types::crypto::{SignatureScheme};
 
-// --- TEMPORARY CONSTANTS FOR TESTING ---
-// These values are from configbackup.rs and are being used temporarily
-// to test the build and runtime after code cleanup.
-// ***** REMEMBER TO REPLACE THESE WITH PLACEHOLDERS BEFORE COMMITTING TO GITHUB *****
+// --- SECURITY NOTICE -------------------------------------------------------------
+// The constants below are **DEMO-ONLY PLACEHOLDERS**.
+//   • They use a zeroed Sui address and an invalid Base64 string.
+//   • In production you **MUST** provide real values via environment variables
+//     SUBMITTER_ADDRESS and SUBMITTER_KEYPAIR_BASE64  (see README).
+//   • Optionally copy this file to `src/config.rs.local`, fill in your
+//     secrets, and add `src/config.rs.local` to `.gitignore`.
+// -------------------------------------------------------------------------------
 
 /// Submitter address for transactions.
 pub const SUBMITTER_ADDRESS: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
