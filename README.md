@@ -186,5 +186,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgments
 
-- SUI Blockchain team for the Move language and blockchain infrastructure
-- Byzantine fault tolerance researchers for theoretical foundations 
+- Phillip Jovanovic / University College London / Professor of Information Security
+- Alberto Sonnino / Mysten Labs / Research Scientist
