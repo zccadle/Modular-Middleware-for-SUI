@@ -35,7 +35,7 @@ Performance testing with 100 iterations shows:
   - 50% Byzantine: 59% success rate 
   - 75% Byzantine: 42% success rate
 
-For detailed benchmark data, see `benchmark_results_final/refactored_benchmarks.json`.
+For detailed benchmark data, see `benchmark_results_100_iter/refactored_benchmarks.json`.
 
 ## Setup and Installation
 
