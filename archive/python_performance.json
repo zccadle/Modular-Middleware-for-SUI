@@ -1,0 +1,72 @@
+[
+  {
+    "transaction_type": "python",
+    "generation_time_ms": null,
+    "sui_time_ms": 0.0153,
+    "execution_time_ms": 25.5299,
+    "verification_time_ms": null,
+    "middleware_overhead_ms": null,
+    "middleware_overhead_percent": null,
+    "total_time_ms": 108.90469999999999,
+    "total_size_bytes": null,
+    "verified": null,
+    "verification_attempts": null,
+    "chain_id": null
+  },
+  {
+    "transaction_type": "python",
+    "generation_time_ms": null,
+    "sui_time_ms": 0.014,
+    "execution_time_ms": 0.1429,
+    "verification_time_ms": null,
+    "middleware_overhead_ms": null,
+    "middleware_overhead_percent": null,
+    "total_time_ms": 59.7387,
+    "total_size_bytes": null,
+    "verified": null,
+    "verification_attempts": null,
+    "chain_id": null
+  },
+  {
+    "transaction_type": "python",
+    "generation_time_ms": null,
+    "sui_time_ms": 0.022600000000000002,
+    "execution_time_ms": 0.1596,
+    "verification_time_ms": null,
+    "middleware_overhead_ms": null,
+    "middleware_overhead_percent": null,
+    "total_time_ms": 100.7446,
+    "total_size_bytes": null,
+    "verified": null,
+    "verification_attempts": null,
+    "chain_id": null
+  },
+  {
+    "transaction_type": "python",
+    "generation_time_ms": null,
+    "sui_time_ms": 0.017499999999999998,
+    "execution_time_ms": 0.14980000000000002,
+    "verification_time_ms": null,
+    "middleware_overhead_ms": null,
+    "middleware_overhead_percent": null,
+    "total_time_ms": 106.6755,
+    "total_size_bytes": null,
+    "verified": null,
+    "verification_attempts": null,
+    "chain_id": null
+  },
+  {
+    "transaction_type": "python",
+    "generation_time_ms": null,
+    "sui_time_ms": 0.0158,
+    "execution_time_ms": 0.14889999999999998,
+    "verification_time_ms": null,
+    "middleware_overhead_ms": null,
+    "middleware_overhead_percent": null,
+    "total_time_ms": 86.6681,
+    "total_size_bytes": null,
+    "verified": null,
+    "verification_attempts": null,
+    "chain_id": null
+  }
+]
